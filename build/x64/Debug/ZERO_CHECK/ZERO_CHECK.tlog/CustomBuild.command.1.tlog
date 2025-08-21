@@ -1,0 +1,10 @@
+^D:\智慧渔业中心\算法相关\LASER_CAMERA_3DONLINE\BUILD\CMAKEFILES\141FFE4188AF1A96519A90DF9FE32A9A\GENERATE.STAMP.RULE
+setlocal
+D:\Software\cmake\cmake-3.30.0-windows-x86_64\bin\cmake.exe -SD:/智慧渔业中心/算法相关/Laser_camera_3Donline -BD:/智慧渔业中心/算法相关/Laser_camera_3Donline/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/智慧渔业中心/算法相关/Laser_camera_3Donline/build/Laser_Camera_3D-online.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
