@@ -7,6 +7,7 @@
 #include "zmq_receiver.h"
 #include "camera_capture.h"
 #include "laser_pointcloud.h"
+#include "point_publisher.h"
 
 #include <opencv2/opencv.hpp>
 #include <Eigen/Dense>
@@ -25,6 +26,8 @@ void signal_handler(int sig) {
     g_camera->stop();
     g_zmqReceiver->stop();
 }
+
+std::unique_ptr<LaserPublisher> laser_pub = std::make_unique<LaserPublisher>("tcp://*:5557");
 
 int main() {
     // 注册信号处理
@@ -85,10 +88,13 @@ int main() {
         }
         lastTimestampMs = timestamp_ms;
 
+        // ✅ 每处理一帧图像，frameCount 就 +1
+        frameCount++;  // 👈
+
         // 获取最接近的位姿
         TimedPose timedPose;
         if (!g_zmqReceiver->getClosestPose(timestamp_ms, timedPose)) {
-            std::cerr << "[Frame " << ++frameCount << "] 未找到有效位姿，时间戳: " << timestamp_ms << std::endl;
+            std::cerr << "[Frame " << frameCount << "] 未找到有效位姿，时间戳: " << timestamp_ms << std::endl;
             continue;
         }
 
@@ -96,8 +102,10 @@ int main() {
         int min_Point_Count = 400;
         auto pointCloud = fetchLaserPointCloud(image, min_Point_Count, K, timedPose.pose);
 
+        laser_pub->publish(frameCount, timestamp_ms, timedPose.pose, pointCloud);
+
         if (!pointCloud.empty()) {
-            std::cout << "[Frame " << ++frameCount << "] 获取到点云数量: " << pointCloud.size() << std::endl;
+            std::cout << "[Frame " << frameCount << "] 获取到点云数量: " << pointCloud.size() << std::endl;
 
             // 保存为 txt 文件（可选：保存为 .ply）
             std::ofstream ofs("pointcloud_" + std::to_string(frameCount) + ".txt");

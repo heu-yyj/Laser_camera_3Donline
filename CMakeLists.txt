@@ -9,6 +9,7 @@ IF(NOT CMAKE_BUILD_TYPE)
   SET(CMAKE_BUILD_TYPE Release)
 ENDIF()
 
+include_directories(D:/Software)
 # -----------------------------
 # 查找并链接 OpenCV
 # -----------------------------
@@ -109,9 +110,26 @@ target_link_libraries(ins_Laser_Camera_3D-online
 # -----------------------------
 # 可执行文件2:ZMQ版本
 # -----------------------------
+
+# 如果你把 point_publisher 封装成一个库（推荐）
+add_library(point_publisher
+    src/point_publisher.cpp
+    include/point_publisher.h
+)
+
+# 给这个库添加 zmq 的包含路径，并导出给使用者
+target_include_directories(point_publisher
+    PUBLIC ${ZMQ_INCLUDE_DIRS}              # zmq.hpp 被暴露
+    PRIVATE ${PROJECT_SOURCE_DIR}/include      # 私有头文件路径
+)
+
+# 链接 zmq 库
+target_link_libraries(point_publisher PRIVATE zmq)
+
 add_executable(zmq_Laser_Camera_3D-online
     zmq_main.cpp
     src/zmq_receiver.cpp
+    src/point_publisher.cpp
     ${COMMON_SOURCES}
 )
 
