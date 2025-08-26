@@ -13,8 +13,13 @@
 
 std::atomic<bool> g_running(true);
 
+// 全局标志用于响应 Ctrl+C
+static std::atomic<bool> exit_requested(false);
+
+
 void signalHandler(int sig) {
     std::cout << "\nReceived shutdown signal (" << sig << ")..." << std::endl;
+     exit_requested = true;
     g_running = false;
 }
 
@@ -30,8 +35,13 @@ int main() {
     // 初始化相机
     CameraCapture camera("192.168.10.101", "192.168.5.105");
     if (!camera.init()) {
-        std::cerr << "Camera initialization failed!" << std::endl;
-        return -1;
+        std::cerr << "相机初始化失败!" << std::endl;
+         // ❌ 不 return，不重试，只是挂起等待
+        while (!exit_requested) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+         return -1;
+    
     }
 
     camera.setSavePath("C:/Users/15158/Desktop/Image_Input/");
