@@ -177,7 +177,7 @@ std::vector<std::pair<Eigen::Vector3d,double>>imagePointsToWorld(
 		Eigen::Vector3d T_cw(424.0, 27.4, 247.6); // 相机坐标系在AUV坐标系中的位置 mm
 
         //每个位姿下的点(AUV坐标系下)
-        Eigen::Vector3d auv_point = R_wc.transpose() * cam_point + T_cw; //转换到AUV(INS)坐标系
+        Eigen::Vector3d auv_point = R_wc * cam_point + T_cw; //转换到AUV(INS)坐标系
         
 
         // 将四元数转换为旋转矩阵
