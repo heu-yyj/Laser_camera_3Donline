@@ -23,11 +23,11 @@ CameraCapture *g_camera = nullptr;  //  全局相机指针
 void signal_handler(int sig) {
     std::cout << "\n🛑 收到退出信号 (" << sig << ")，正在关闭...\n";
     exit_requested = true;
-    g_camera->stop();
-    g_zmqReceiver->stop();
+    if (g_camera) g_camera->stop();
+    if (g_zmqReceiver) g_zmqReceiver->stop();
 }
 
-std::unique_ptr<LaserPublisher> laser_pub = std::make_unique<LaserPublisher>("tcp://*:5557");
+// std::unique_ptr<LaserPublisher> laser_pub = std::make_unique<LaserPublisher>("tcp://*:5557");
 
 int main() {
     // 注册信号处理
@@ -40,9 +40,15 @@ int main() {
 
     // 等待 ZMQ 接收器启动
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    //接收点云的iP 
+    const std::string SERVER_ADDR = "tcp://10.101.30.221:5557";
+    LaserPublisher laserpub(SERVER_ADDR); // 传入地址
 
     // 初始化相机
     CameraCapture camera("192.168.10.101", "192.168.5.105");
+    g_camera = &camera;  // ← 添加这一行
+
     if (!camera.init()) {
         std::cerr << "相机初始化失败!" << std::endl;
          // ❌ 不 return，不重试，只是挂起等待
@@ -53,7 +59,7 @@ int main() {
     
     }
 
-    camera.setSavePath("C:/Users/15158/Desktop/Image_Input/");
+    camera.setSavePath("D:/激光数据/Image_Input/");
     if (!camera.start()) {
         std::cerr << "相机启动失败!" << std::endl;
         return -1;
@@ -102,13 +108,13 @@ int main() {
         int min_Point_Count = 400;
         auto pointCloud = fetchLaserPointCloud(image, min_Point_Count, K, timedPose.pose);
 
-        laser_pub->publish(frameCount, timestamp_ms, timedPose.pose, pointCloud);
+        laserpub.publish(frameCount, timestamp_ms, timedPose.pose, pointCloud);
 
         if (!pointCloud.empty()) {
             std::cout << "[Frame " << frameCount << "] 获取到点云数量: " << pointCloud.size() << std::endl;
 
             // 保存为 txt 文件（可选：保存为 .ply）
-            std::ofstream ofs("pointcloud_" + std::to_string(frameCount) + ".txt");
+            std::ofstream ofs("pointcloud_" + std::to_string(frameCount) + ".ply");
             for (const auto& [point, distance] : pointCloud) {
                 ofs << point.x() << " " << point.y() << " " << point.z() << " " << distance << "\n";
             }
@@ -117,11 +123,6 @@ int main() {
 
         // 控制 CPU 占用
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-   
-    // 主线程等待退出信号
-    while (!exit_requested) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     std::cout << "Goodbye!" << std::endl;

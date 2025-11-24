@@ -7,7 +7,7 @@
 
 class LaserPublisher {
 public:
-    explicit LaserPublisher(const std::string& endpoint);
+    explicit LaserPublisher(const std::string& target_address);
     ~LaserPublisher();
 
     // 发布点云

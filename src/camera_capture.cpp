@@ -4,7 +4,7 @@
 #include <sstream>
 #include <opencv2/opencv.hpp>
 #include <filesystem>
-
+  
 CameraCapture::CameraCapture(const std::string& ip, const std::string& netExport)
     : m_ip(ip), m_netExport(netExport), handle(nullptr), m_mutex(nullptr),
     m_isRunning(false), m_savePath("C:/Images/") {
@@ -40,18 +40,19 @@ bool CameraCapture::init() {
     stDevInfo.nTLayerType = MV_GIGE_DEVICE;
     stDevInfo.SpecialInfo.stGigEInfo = stGigEDev;
 
+    //初始化SDK
     int nRet = MV_CC_Initialize();
     if (MV_OK != nRet) {
         std::cerr << "Initialize SDK failed! nRet [0x" << std::hex << nRet << "]" << std::endl;
         return false;
     }
-
+    //选择设备创建句柄
     nRet = MV_CC_CreateHandle(&handle, &stDevInfo);
     if (MV_OK != nRet) {
         std::cerr << "Create Handle failed! nRet [0x" << std::hex << nRet << "]" << std::endl;
         return false;
     }
-
+    //打开设备
     nRet = MV_CC_OpenDevice(handle);
     if (MV_OK != nRet) {
         std::cerr << "Open Device failed! nRet [0x" << std::hex << nRet << "]" << std::endl;
@@ -78,6 +79,7 @@ bool CameraCapture::init() {
 bool CameraCapture::start() {
     if (!handle) return false;
 
+    //开始取流
     int nRet = MV_CC_StartGrabbing(handle);
     if (nRet != MV_OK) {
         std::cerr << "Start grabbing failed! nRet [0x" << std::hex << nRet << "]" << std::endl;
@@ -97,7 +99,10 @@ bool CameraCapture::stop() {
     if (m_captureThread.joinable()) {
         m_captureThread.join();
     }
-
+    //停止取流
+    // 
+    //关闭设备
+    //销毁句柄
     MV_CC_StopGrabbing(handle);
     MV_CC_RegisterImageCallBackEx(handle, NULL, NULL);
     MV_CC_CloseDevice(handle);

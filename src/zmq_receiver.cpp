@@ -5,6 +5,8 @@
 #include <sstream>
 #include <vector>
 #include <iomanip>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 // 分割字符串
 std::vector<std::string> split(const std::string& s, char delimiter) {
@@ -18,25 +20,21 @@ std::vector<std::string> split(const std::string& s, char delimiter) {
     }
     return tokens;
 }
-struct TimedPose; // 前向声明
 
-// 解析 ZMQ 消息（CSV格式：timestamp,x,y,z,qw,qx,qy,qz）
+// 解析 ZMQ 消息（JSON格式）
 bool ZmqPoseReceiver::parsePose(const std::string& line, TimedPose& timedPose) {
-    auto parts = split(line, ',');
-    if (parts.size() != 8) return false;
-
     try {
-        timedPose.timestamp_msec = std::stoll(parts[0]);
-        timedPose.pose.x = std::stod(parts[1]);
-        timedPose.pose.y = std::stod(parts[2]);
-        timedPose.pose.z = std::stod(parts[3]);
-        timedPose.pose.qw = std::stod(parts[4]);
-        timedPose.pose.qx = std::stod(parts[5]);
-        timedPose.pose.qy = std::stod(parts[6]);
-        timedPose.pose.qz = std::stod(parts[7]);
+        auto j = json::parse(line);
+        timedPose.timestamp_msec = j.at("t").get<int64_t>();
+        timedPose.pose.x = j.at("x").get<double>();
+        timedPose.pose.y = j.at("y").get<double>();
+        timedPose.pose.z = j.at("z").get<double>();
+        timedPose.pose.qw = j.at("qw").get<double>();
+        timedPose.pose.qx = j.at("qx").get<double>();
+        timedPose.pose.qy = j.at("qy").get<double>();
+        timedPose.pose.qz = j.at("qz").get<double>();
         return true;
-    }
-    catch (...) {
+    } catch (...) {
         return false;
     }
 }
@@ -94,6 +92,7 @@ void ZmqPoseReceiver::receiverThreadFunc() {
                 std::cout << "📥 ZMQ 收到位姿: "
                           << "Time=" << timedPose.timestamp_msec << "ms"
                           << " | Pos=(" << timedPose.pose.x << "," << timedPose.pose.y << "," << timedPose.pose.z << ")"
+                          << " | Rot=(" << timedPose.pose.qw << "," << timedPose.pose.qx << "," << timedPose.pose.qy << "," << timedPose.pose.qz << ")"
                           << std::endl;
             } else {
                 std::cerr << "❌ ZMQ 解析失败: " << msg_str << std::endl;
