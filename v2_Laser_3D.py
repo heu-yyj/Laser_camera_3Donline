@@ -71,21 +71,6 @@ zmq_socket.set(zmq.CONFLATE, 1)
 zmq_socket.connect(f"tcp://{ZMQ_SERVER_IP}:{ZMQ_PORT}")
 print(f"[ZMQ] 已连接 {ZMQ_SERVER_IP}:{ZMQ_PORT}")
 
-# ===================== PLY 文件 =====================
-# def create_new_ply_file():
-#     global current_ply_path, ply_file, total_points
-#     total_points = 0
-#     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-#     current_ply_path = f"laser_pointcloud_{timestamp_str}.ply"
-#     ply_file = open(current_ply_path, "w")
-#     ply_file.write("ply\nformat ascii 1.0\n")
-#     ply_file.write(f"comment Generated at {datetime.now().isoformat()}\n")
-#     ply_file.write("element vertex 0\n")
-#     ply_file.write("property float x\nproperty float y\nproperty float z\n")
-#     ply_file.write("property float distance\nend_header\n")
-#     ply_file.flush()
-#     print(f"[PLY] 本次运行保存至：{current_ply_path}")
-
 def create_new_ply_file():
     global current_ply_path, ply_file, total_points
     total_points = 0
@@ -103,14 +88,6 @@ def create_new_ply_file():
     ply_file.write("end_header\n")
     ply_file.flush()
     print(f"[PLY] 本次运行保存至：{current_ply_path}（纯 XYZ 点云）")
-
-# def append_points_to_ply(world_pts, distances):
-#     global total_points
-#     lines = [f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} {d:.6f}\n" for p, d in zip(world_pts, distances)]
-#     with ply_lock:
-#         ply_file.writelines(lines)
-#         ply_file.flush()
-#         total_points += len(world_pts)
 
 def append_points_to_ply(world_pts):
     """
