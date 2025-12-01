@@ -148,6 +148,123 @@ def build_pose_matrix(pos, quat):
 
 # ===================== Nokov & UDP 线程（保持不变）=====================
 # （nokov_thread, get_nearest_pose, udp_thread 完全使用你原来的正确版本）
+# ===================== Nokov 线程 =====================
+def nokov_thread():
+    global client, first_pose_received
+    client = PySDKClient()
+    ret = client.Initialize(bytes(NOKOV_SERVER_IP, encoding="utf-8"))
+    if ret != 0:
+        print(f"[NOKOV] 连接失败: {ret}")
+        return
+    print("[NOKOV] 已连接，等待第一帧位姿...")
+    while running:
+        frame = client.PyGetLastFrameOfMocapData()
+        if frame:
+            try:
+                data = frame.contents
+                ts_us = data.iTimeStamp
+                for i in range(data.nRigidBodies):
+                    rb = data.RigidBodies[i]
+                    if rb.x > 9999990: continue
+                    pos = np.array([rb.x, rb.y, rb.z])
+                    quat = np.array([rb.qw, rb.qx, rb.qy, rb.qz])
+                    with pose_lock:
+                        pose_cache.append((ts_us, pos.copy(), quat.copy()))
+                        cutoff = ts_us - int(POSE_CACHE_SEC * 1e6)
+                        while pose_cache and pose_cache[0][0] < cutoff:
+                            pose_cache.popleft()
+                    if not first_pose_received:
+                        first_pose_received = True
+                        print(f"[NOKOV] 收到第一帧位姿，时间戳: {ts_us} μs")
+            finally:
+                client.PyNokovFreeFrame(frame)
+        else:
+            time.sleep(0.001)
+    client.Uninitialize()
+
+# ===================== 时间戳匹配（关键修复）=====================
+def get_nearest_pose(ts_ns: int):
+    ts_us = ts_ns // 1_000_000                     # 正确：纳秒 → 微秒
+    with pose_lock:
+        if not pose_cache:
+            return None, None
+        ts_arr = np.array([t for t, _, _ in pose_cache])
+        idx = np.argmin(np.abs(ts_arr - ts_us))
+        dt_us = abs(ts_arr[idx] - ts_us)
+        dt_ms = dt_us / 1000.0
+
+        # 即使偏差大一点也继续用（水下常见）
+        if dt_ms > SYNC_THRESHOLD_MS:
+            print(f"[Warning] 时间戳偏差 {dt_ms:.1f}ms，仍使用最近位姿")
+
+        _, pos, quat = pose_cache[idx]
+        return (pos.copy(), quat.copy(), dt_ms), dt_ms
+
+# ===================== UDP 主线程 =====================
+def udp_thread():
+    global frame_idx, first_image_received
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((UDP_IP, UDP_PORT))
+    sock.setblocking(False)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16*1024*1024)
+    print(f"[UDP] 监听 {UDP_IP}:{UDP_PORT}（非阻塞 + 16MB缓冲）")
+
+    while running:
+        latest_msg = None
+        while running:
+            try:
+                data, _ = sock.recvfrom(65535)
+                latest_msg = json.loads(data.decode('utf-8'))
+            except BlockingIOError:
+                break
+            except Exception as e:
+                print("UDP解析异常:", e)
+
+        if not latest_msg:
+            time.sleep(0.001)
+            continue
+
+        points = latest_msg.get("laser_points", [])
+        if not points:
+            continue
+
+        ts_ns = latest_msg["timestamp"]
+        if not first_image_received:
+            first_image_received = True
+            print(f"[Laser] 收到第一帧激光点，时间戳: {ts_ns} ns")
+
+        if not first_pose_received:
+            print("等待 Nokov 位姿就绪...")
+            continue
+
+        pose_info, dt_ms = get_nearest_pose(ts_ns)
+        if pose_info is None:
+            continue
+
+        auv_pos, auv_quat, sync_delay_ms = pose_info
+
+        xs = np.array([p["x"] for p in points], dtype=np.float64)
+        depths = compute_depths(xs)
+        cam_pts = image_to_camera(points, depths)
+        world_pts, distances = camera_to_world_with_distance(cam_pts, auv_pos, auv_quat)
+
+        # 发布 + 保存
+        payload = {
+            "header": {
+                "timestamp": time.time(),
+                "frame_id": "laser",
+                "frame_idx": frame_idx,
+                "pose": build_pose_matrix(auv_pos, auv_quat)
+            },
+            "points": world_pts.reshape(-1).tolist()
+        }
+        zmq_socket.send_json(payload, flags=zmq.NOBLOCK)
+        append_points_to_ply(world_pts)
+
+        print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
+              f"sync_delay: {sync_delay_ms:+.1f}ms | {os.path.basename(current_ply_path)}")
+
+        frame_idx += 1
 
 # ===================== 可视化线程（完美版）=====================
 def visualization_thread():
@@ -185,25 +302,37 @@ def visualization_thread():
             pcd.colors = o3d.utility.Vector3dVector(colors)
             need_update = True
 
-        if latest_auv_pose is not None:
-            pos, quat = latest_auv_pose
-            trajectory_points.append(pos.copy())
-            if len(trajectory_points) > 10000:
-                trajectory_points.pop(0)
-            if len(trajectory_points) > 1:
-                points_vec = o3d.utility.Vector3dVector(trajectory_points)
-                lines = [[i, i+1] for i in range(len(trajectory_points)-1)]
-                trajectory_line.points = points_vec
-                trajectory_line.lines = o3d.utility.Vector2iVector(lines)
-                trajectory_line.colors = o3d.utility.Vector3dVector([[1,1,1]] * (len(lines)))
+            # 在 visualization_thread() 里，找到更新 AUV 姿态和轨迹线的部分，替换成下面这段：   ]
+            if latest_auv_pose is not None:
+                pos, quat = latest_auv_pose
 
-            T = np.eye(4)
-            r = R.from_quat(quat[[1,2,3,0]])
-            T[:3,:3] = r.as_matrix()
-            T[:3,3] = pos
-            auv_mesh.transform(np.linalg.inv(T @ np.linalg.inv(T)))  # 清零
-            auv_mesh.transform(T)
-            need_update = True
+                # 更新轨迹点
+                trajectory_points.append(pos.copy())
+                if len(trajectory_points) > 10000:
+                    trajectory_points.pop(0)
+
+                # 更新轨迹线
+                if len(trajectory_points) > 1:
+                    points_vec = o3d.utility.Vector3dVector(trajectory_points)
+                    lines = [[i, i+1] for i in range(len(trajectory_points)-1)]
+                    trajectory_line.points = points_vec
+                    trajectory_line.lines = o3d.utility.Vector2iVector(lines)
+                    trajectory_line.colors = o3d.utility.Vector3dVector([[1, 1, 1]] * len(lines))
+                    need_update = True
+                else:
+                    lines = []  # 防止未定义
+
+                # 更新 AUV 小车（最稳写法）
+                T = np.eye(4)
+                r = R.from_quat(quat[[1, 2, 3, 0]])
+                T[:3, :3] = r.as_matrix()
+                T[:3, 3] = pos
+
+                # 正确清零 + 应用新位姿
+                auv_mesh.translate(-auv_mesh.get_center())
+                auv_mesh.rotate(auv_mesh.get_rotation_matrix_from_xyz((0,0,0)), center=False)
+                auv_mesh.transform(T)
+                need_update = True
 
         if need_update:
             for geom in [pcd, trajectory_line, auv_mesh]:
