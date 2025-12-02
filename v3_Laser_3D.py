@@ -40,8 +40,8 @@ A_RAD      = np.deg2rad(19.6)
 T_cam2ins = np.array([424.0, 27.4, 247.6])   # 相机相对于惯导中心的平移（mm）
 
 # Marker灯/刚体 相对于惯导中心的平移（mm）
-# 比如灯在惯导前方30cm，右边10cm，上方5cm
-T_marker_to_ins = np.array([300.0, 0, 50.0])
+# 比如灯在惯导/INS前方3-4.5cm,取35mm，左边12.4mm，上方12.4mm+100+45mm
+T_marker_to_ins = np.array([35, 12.4, 157.4])
 
 T_cam2marker = T_cam2ins - T_marker_to_ins  #  最终外参：相机 → 动捕刚体原点（Marker灯）
 
@@ -284,7 +284,7 @@ def visualization_thread():
     vis.create_window("激光结构光实时点云 + AUV轨迹", width=1600, height=1000)
 
     pcd = o3d.geometry.PointCloud()
-    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0,0,0])
+    coord_frame = o3d.geometry.TriangleMesh   .create_coordinate_frame(size=1.0, origin=[0,0,0])
     trajectory_line = o3d.geometry.LineSet()
     auv_mesh = o3d.geometry.TriangleMesh.create_box(width=0.3, height=0.2, depth=0.6)
     auv_mesh.paint_uniform_color([0.2, 0.6, 1.0])
