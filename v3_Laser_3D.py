@@ -37,11 +37,21 @@ f_mm       = fx * PIXEL_SIZE
 BASELINE_S = 220.0
 A_RAD      = np.deg2rad(19.6)
 
-R_cam2auv = R.from_euler('zyx', [np.deg2rad(199.6), 0, np.deg2rad(90)]).as_matrix()
-T_cam2auv = np.array([424.0, 27.4, 247.6])
+T_cam2ins = np.array([424.0, 27.4, 247.6])   # 相机相对于惯导中心的平移（mm）
+
+# Marker灯/刚体 相对于惯导中心的平移（mm）
+# 比如灯在惯导前方30cm，右边10cm，上方5cm
+T_marker_to_ins = np.array([300.0, 0, 50.0])
+
+T_cam2marker = T_cam2ins - T_marker_to_ins  #  最终外参：相机 → 动捕刚体原点（Marker灯）
+
+ # 旋转部分通常不变（因为你刚体坐标轴和AUV一致） XYZ为AUV前右下
+R_cam2marker =  R.from_euler('zyx', [np.deg2rad(199.6), 0, np.deg2rad(90)]).as_matrix() 
+R_cam2auv = R_cam2marker
+T_cam2auv = T_cam2marker
 
 POSE_CACHE_SEC    = 5.0
-SYNC_THRESHOLD_MS = 800
+SYNC_THRESHOLD_MS = 100
 # =========================================================
 
 # 全局状态
@@ -319,8 +329,6 @@ def visualization_thread():
                     trajectory_line.lines = o3d.utility.Vector2iVector(lines)
                     trajectory_line.colors = o3d.utility.Vector3dVector([[1, 1, 1]] * len(lines))
                     need_update = True
-                else:
-                    lines = []  # 防止未定义
 
                 # 更新 AUV 小车（最稳写法）
                 T = np.eye(4)
@@ -330,7 +338,7 @@ def visualization_thread():
 
                 # 正确清零 + 应用新位姿
                 auv_mesh.translate(-auv_mesh.get_center())
-                auv_mesh.rotate(auv_mesh.get_rotation_matrix_from_xyz((0,0,0)), center=False)
+                auv_mesh.rotate(np.eye(3), center=False)
                 auv_mesh.transform(T)
                 need_update = True
 
