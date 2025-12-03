@@ -277,14 +277,17 @@ def udp_thread():
         frame_idx += 1
 
 # ===================== 可视化线程（完美版）=====================
+# ===================== 终极可视化线程（永不假死版）=====================
 def visualization_thread():
     global vis, pcd, coord_frame, trajectory_line, auv_mesh, running, latest_world_pts, latest_auv_pose, trajectory_points
 
+    # 1. 创建窗口（提前创建，让用户看到“正在启动”）
     vis = o3d.visualization.Visualizer()
-    vis.create_window("激光结构光实时点云 + AUV轨迹", width=1600, height=1000)
+    vis.create_window("激光结构光实时点云 + AUV轨迹（启动中...）", width=1600, height=1000)
 
+    # 初始几何体
     pcd = o3d.geometry.PointCloud()
-    coord_frame = o3d.geometry.TriangleMesh   .create_coordinate_frame(size=1.0, origin=[0,0,0])
+    coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0,0,0])
     trajectory_line = o3d.geometry.LineSet()
     auv_mesh = o3d.geometry.TriangleMesh.create_box(width=0.3, height=0.2, depth=0.6)
     auv_mesh.paint_uniform_color([0.2, 0.6, 1.0])
@@ -298,75 +301,92 @@ def visualization_thread():
     opt.point_size = 2.5
     opt.background_color = np.asarray([0.05, 0.05, 0.1])
 
-    print("[Open3D] 可视化窗口已启动")
+    print("[Open3D] 可视化窗口已启动（等待数据...）")
 
+    # 2. 等待第一帧有效数据（关键！）
+    print("   等待激光点和动捕位姿就绪...")
+    while running:
+        if latest_world_pts is not None and len(latest_world_pts) > 100 and latest_auv_pose is not None:
+            vis.get_view_control().set_front([0, 0, -1])   # 设置初始视角
+            vis.get_view_control().set_lookat([0, 0, 0])
+            vis.get_view_control().set_up([0, -1, 0])
+            vis.get_view_control().set_zoom(0.5)
+            print("[Open3D] 数据就绪，开始实时显示！")
+            break
+        vis.poll_events()
+        vis.update_renderer()
+        time.sleep(0.1)
+
+    # 3. 主循环（丝滑不卡版）
     while running:
         need_update = False
+
+        # 更新点云
         if latest_world_pts is not None and len(latest_world_pts) > 100:
             pcd.points = o3d.utility.Vector3dVector(latest_world_pts)
             dists = np.linalg.norm(latest_world_pts, axis=1)
-            norm = (dists - dists.min()) / (dists.max() - dists.min() + 1e-6)
+            norm = (dists - dists.min()) / (dists.ptp() + 1e-6)
             colors = np.zeros((len(dists), 3))
             colors[:, 0] = norm
             colors[:, 2] = 1 - norm
             pcd.colors = o3d.utility.Vector3dVector(colors)
             need_update = True
 
-            # 在 visualization_thread() 里，找到更新 AUV 姿态和轨迹线的部分，替换成下面这段：   ]
-            if latest_auv_pose is not None:
-                pos, quat = latest_auv_pose
+        # 更新轨迹 + AUV姿态
+        if latest_auv_pose is not None:
+            pos, quat = latest_auv_pose
+            trajectory_points.append(pos.copy())
+            if len(trajectory_points) > 10000:
+                trajectory_points.pop(0)
 
-                # 更新轨迹点
-                trajectory_points.append(pos.copy())
-                if len(trajectory_points) > 10000:
-                    trajectory_points.pop(0)
-
-                # 更新轨迹线
-                if len(trajectory_points) > 1:
-                    points_vec = o3d.utility.Vector3dVector(trajectory_points)
-                    lines = [[i, i+1] for i in range(len(trajectory_points)-1)]
-                    trajectory_line.points = points_vec
-                    trajectory_line.lines = o3d.utility.Vector2iVector(lines)
-                    trajectory_line.colors = o3d.utility.Vector3dVector([[1, 1, 1]] * len(lines))
-                    need_update = True
-
-                # 更新 AUV 小车（最稳写法）
-                T = np.eye(4)
-                r = R.from_quat(quat[[1, 2, 3, 0]])
-                T[:3, :3] = r.as_matrix()
-                T[:3, 3] = pos
-
-                # 正确清零 + 应用新位姿
-                auv_mesh.translate(-auv_mesh.get_center())
-                auv_mesh.rotate(np.eye(3), center=False)
-                auv_mesh.transform(T)
+            if len(trajectory_points) > 1:
+                points_vec = o3d.utility.Vector3dVector(trajectory_points)
+                lines = [[i, i+1] for i in range(len(trajectory_points)-1)]
+                trajectory_line.points = points_vec
+                trajectory_line.lines = o3d.utility.Vector2iVector(lines)
+                trajectory_line.colors = o3d.utility.Vector3dVector([[1, 1, 1]] * len(lines))
                 need_update = True
+
+            # 更新AUV小车
+            T = np.eye(4)
+            r = R.from_quat(quat[[1,2,3,0]])
+            T[:3,:3] = r.as_matrix()
+            T[:3,3] = pos
+            auv_mesh.translate(-auv_mesh.get_center())
+            auv_mesh.rotate(np.eye(3), center=False)
+            auv_mesh.transform(T)
+            need_update = True
 
         if need_update:
             for geom in [pcd, trajectory_line, auv_mesh]:
                 vis.update_geometry(geom)
-            if not vis.poll_events():    # 如果窗口关闭，返回False
-                break
-            vis.update_renderer()
-        time.sleep(0.001)
+
+        # 关键！让Open3D有时间响应鼠标/键盘/关闭事件
+        if not vis.poll_events():
+            break  # 窗口关闭时优雅退出
+        vis.update_renderer()
+
+        time.sleep(0.001)  # 超高刷新率，但不卡！
 
     vis.destroy_window()
+    print("[Open3D] 可视化窗口已关闭")
 
 # ===================== 主
 # 程序（关键修改）=====================
 if __name__ == "__main__":
     create_new_ply_file()
     
-    # 启动所有线程
+    # 启动所有线程 
     threading.Thread(target=nokov_thread, daemon=False).start()
     threading.Thread(target=udp_thread, daemon=False).start()
-    threading.Thread(target=visualization_thread, daemon=False).start()  # 必须是 False！
+    time.sleep(2.0)  # 确保数据线程先跑起来
+    threading.Thread(target=visualization_thread, daemon=False).start()  # 最后启动可视化
 
     print("\n=== 激光结构光实时融合系统 + Open3D可视化 已启动 ===")
     print("点云 + 轨迹 + 坐标系 + AUV姿态 实时显示！\n")
 
     try:
-        while True:
+        while running:
             time.sleep(1)
     except KeyboardInterrupt:
         running = False
