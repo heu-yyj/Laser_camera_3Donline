@@ -19,8 +19,8 @@ BATCH_UPDATE_SIZE = 10      # 累积多少帧后更新一次历史点云 (优化
 context = zmq.Context()
 socket = context.socket(zmq.PULL)
 try:
-    socket.bind("tcp://127.0.0.1:5557")
-    print("[ZMQ] 成功绑定到 tcp://127.0.0.1:5557")
+    socket.bind("tcp://192.168.5.110:5557")
+    print("[ZMQ] 成功绑定到 tcp://192.168.5.110:5557")
     socket.setsockopt(zmq.RCVHWM, 10) # 设置接收缓冲区上限，防止内存暴涨
     socket.setsockopt(zmq.SNDHWM, 10)
 except Exception as e:

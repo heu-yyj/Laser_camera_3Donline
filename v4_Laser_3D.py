@@ -82,8 +82,15 @@ def create_new_ply_file():
     global current_ply_path, ply_file, total_points
     total_points = 0
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_ply_path = f"laser_pointcloud_{timestamp_str}.ply"
-    ply_file = open(current_ply_path, "w")
+    
+    output_dir = "D:/工作/LaserData"  # 注意：中文路径通常没问题，但需确保编码支持
+    os.makedirs(output_dir, exist_ok=True)
+    
+    current_ply_path = os.path.join(output_dir, f"laser_pointcloud_{timestamp_str}.ply")
+    
+    # ✅ 正确：打开的是文件路径，不是目录！
+    ply_file = open(current_ply_path, "w", encoding='utf-8')  # 显式指定编码更安全
+    
     ply_file.write("ply\nformat ascii 1.0\n")
     ply_file.write(f"comment Generated @ {datetime.now().isoformat()}\n")
     ply_file.write("element vertex 0\n")
