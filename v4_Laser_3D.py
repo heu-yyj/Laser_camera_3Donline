@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-精简版：激光 + Nokov + ZeroMQ 实时数据发布（带轨迹+坐标系，无3D显示）
-单位转换：毫米(mm) -> 米(m)，保留4位小数
+激光 + Nokov + ZeroMQ 实时数据发布
 """
 
 import socket
@@ -41,6 +40,7 @@ A_RAD      = np.deg2rad(19.6)
 T_cam2ins = np.array([424.0, 27.4, 247.6])   
 
 # Marker灯/刚体 相对于惯导中心的平移（mm）
+# 比如灯在惯导/INS前方3-4.5cm,取35mm，左边12.4mm，上方12.4mm+100+45mm
 T_marker_to_ins = np.array([35, -12.4, -157.4])
 
 # 最终外参：相机 → 动捕刚体原点（Marker灯）
@@ -188,11 +188,10 @@ def nokov_thread():
                 client.PyNokovFreeFrame(frame)
         else:
             time.sleep(0.001)
-    # client.Uninitialize() # 根据 SDK 要求决定是否调用
 
 # ===================== 时间戳匹配 ======================
 def get_nearest_pose(ts_ns: int):
-    ts_us = ts_ns // 1_000_000                     
+    ts_us = ts_ns // 1_000_000                    # ：纳秒 → 微秒 
     with pose_lock:
         if not pose_cache:
             return None, None
