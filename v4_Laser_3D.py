@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-激光 + Nokov + ZeroMQ 实时数据发布
+激光 + Nokov + ZeroMQ 实时数据发布（全系统单位：毫米 mm）
 """
 
 import socket  
@@ -14,15 +14,14 @@ from nokov.nokovsdk import *
 from scipy.spatial.transform import Rotation as R
 import os
 from datetime import datetime
-import signal
 import sys
 import atexit
 
 # ========================= 配置区 =========================
 UDP_IP          = "0.0.0.0"
 UDP_PORT        = 8888
-NOKOV_SERVER_IP = "192.168.5.110"  #动捕系统位姿广播IP
-ZMQ_SERVER_IP   = "192.168.5.110"  #叶威IP 10.101.30.58
+NOKOV_SERVER_IP = "10.104.21.38"  # 动捕系统位姿广播IP
+ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP
 ZMQ_PORT        = 5557
 
 # 相机内参矩阵（像素单位）
@@ -37,32 +36,26 @@ f_mm       = fx * PIXEL_SIZE    # 焦距（mm）
 BASELINE_S = 220.0              # 激光三角测距基线长度（mm）
 A_RAD      = np.deg2rad(19.6)  # 激光发射角（弧度）
 
-# 相机相对于惯导中心的平移（mm）,相机在惯导坐标系下的位移
+# 相机相对于惯导中心的平移（mm）
 T_cam2ins = np.array([424.0, 27.4, 247.6])   
 
 # Marker灯/刚体 相对于惯导中心的平移（mm）
-# 比如灯在惯导/INS前方3-4.5cm,取35mm，左边12.4mm，上方12.4mm+100+45mm
 T_marker_to_ins = np.array([35, -12.4, -157.4])
 
 # 最终外参：相机 → 动捕刚体原点（Marker灯）
 T_cam2marker = T_cam2ins - T_marker_to_ins  
-# 旋转部分通常不变（因为你刚体坐标轴和AUV一致） XYZ为AUV前右下
-R_cam2marker =  R.from_euler('zyx', [np.deg2rad(199.6), 0, np.deg2rad(90)]).as_matrix() 
+R_cam2marker = R.from_euler('zyx', [np.deg2rad(199.6), 0, np.deg2rad(90)]).as_matrix() 
 R_cam2auv = R_cam2marker
-T_cam2auv = T_cam2marker # 单位：mm
+T_cam2auv = T_cam2marker  # 单位：mm
 
 POSE_CACHE_SEC    = 5.0         # 位姿缓存时间窗口（秒）
 SYNC_THRESHOLD_MS = 100         # 时间戳同步阈值（毫秒）
-
-# 单位转换常量
-MM_TO_M = 0.001
-# =========================================================
 
 # 全局状态
 running = True
 frame_idx = 0
 pose_lock = threading.Lock()
-pose_cache = deque()       # 存储 (timestamp_us, pos_mm, quat) 的双端队列
+pose_cache = deque()       # (timestamp_us, pos_mm, quat)
 first_image_received = False
 first_pose_received = False
 current_ply_path = None
@@ -73,42 +66,40 @@ ply_lock = threading.Lock()
 # ZeroMQ
 context = zmq.Context()
 zmq_socket = context.socket(zmq.PUSH)
-zmq_socket.set_hwm(0)         # 不限制高水位（可能丢帧但不阻塞）
-zmq_socket.set(zmq.CONFLATE, 1)   # 只保留最新消息（适用于实时流）
+zmq_socket.set_hwm(0)
+zmq_socket.set(zmq.CONFLATE, 1)
 zmq_socket.connect(f"tcp://{ZMQ_SERVER_IP}:{ZMQ_PORT}")
 print(f"[ZMQ] 已连接 {ZMQ_SERVER_IP}:{ZMQ_PORT}")
 
-# ===================== PLY 文件函数（保持不变）=====================
+# ===================== PLY 文件函数 ======================
 def create_new_ply_file():
     global current_ply_path, ply_file, total_points
     total_points = 0
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    output_dir = "D:/工作/LaserData"  # 注意：中文路径通常没问题，但需确保编码支持
+    output_dir = "D:/工作/LaserData"
     os.makedirs(output_dir, exist_ok=True)
     
     current_ply_path = os.path.join(output_dir, f"laser_pointcloud_{timestamp_str}.ply")
-    
-    # ✅ 正确：打开的是文件路径，不是目录！
-    ply_file = open(current_ply_path, "w", encoding='utf-8')  # 显式指定编码更安全
+    ply_file = open(current_ply_path, "w", encoding='utf-8')
     
     ply_file.write("ply\nformat ascii 1.0\n")
     ply_file.write(f"comment Generated @ {datetime.now().isoformat()}\n")
+    ply_file.write("comment Unit: millimeter\n")  # 明确标注单位
     ply_file.write("element vertex 0\n")
     ply_file.write("property float x\nproperty float y\nproperty float z\n")
     ply_file.write("end_header\n")
     ply_file.flush()
-    print(f"[PLY] 保存至：{current_ply_path}")
+    print(f"[PLY] 保存至：{current_ply_path}（单位：毫米）")
 
 def append_points_to_ply(world_pts_mm):
     global total_points
-    # 转换为米并保留4位小数
-    world_pts_m = world_pts_mm * MM_TO_M    
-    lines = [f"{x:.4f} {y:.4f} {z:.4f}\n" for x, y, z in world_pts_m]
+    # 直接写入毫米单位（不转换）
+    lines = [f"{x:.4f} {y:.4f} {z:.4f}\n" for x, y, z in world_pts_mm]
     with ply_lock:
         ply_file.writelines(lines)
         ply_file.flush()
-        total_points += len(world_pts_mm) # 计数基于原始点数
+        total_points += len(world_pts_mm)
 
 def close_ply_file():
     global ply_file
@@ -123,46 +114,42 @@ def close_ply_file():
                 f.seek(0)
                 f.write(new_header + body)
                 f.truncate()
-            print(f"\n[PLY] 已完成：{current_ply_path}（{total_points}点）")
-        except:
-            print(f"\n[PLY] 文件已保存")
+            print(f"\n[PLY] 已完成：{current_ply_path}（{total_points}点，单位：毫米）")
+        except Exception as e:
+            print(f"\n[PLY] 文件已保存（更新顶点数失败: {e})")
 atexit.register(close_ply_file)
 
 # ===================== 激光处理函数 =====================
 def compute_depths(x_coords): 
-    d = (x_coords - cx) * PIXEL_SIZE    # 像素偏移 → 物理偏移（mm）  
-    tanB = d / f_mm          # tan(β)
-    return BASELINE_S / (np.tan(A_RAD) + tanB)  # 深度公式
+    d = (x_coords - cx) * PIXEL_SIZE    # mm
+    tanB = d / f_mm
+    return BASELINE_S / (np.tan(A_RAD) + tanB)
 
 def image_to_camera(points_img, depths):
     K_inv = np.linalg.inv(K)
     pts = np.zeros((len(points_img), 3))
     for i, pt in enumerate(points_img):
         uv1 = np.array([pt['x'], pt['y'], 1.0])
-        norm = K_inv @ uv1   # 归一化平面坐标
-        pts[i] = depths[i] * norm   # 深度缩放 → 相机坐标（mm）
+        norm = K_inv @ uv1
+        pts[i] = depths[i] * norm   # mm
     return pts
 
 def camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat):
-    # 注意：这里的计算仍然使用毫米单位
-    #1. 相机 → AUV 坐标系
     auv_pts_mm = (R_cam2auv @ cam_pts_mm.T).T + T_cam2auv
-    r = R.from_quat(auv_quat)  #  注意：四元数顺序是 [x,y,z,w]scalar-last
+    r = R.from_quat(auv_quat)  # [x, y, z, w]
     R_w = r.as_matrix()
-    # auv_pos_mm 是毫米单位，auv_pts_mm 也是毫米单位，结果 world_pts_mm 也是毫米
     world_pts_mm = (R_w @ auv_pts_mm.T).T + auv_pos_mm 
-    distances = np.linalg.norm(cam_pts_mm, axis=1)      #用于后续滤波（可选）
-    
-    return world_pts_mm, distances # 返回毫米单位的点云
+    distances = np.linalg.norm(cam_pts_mm, axis=1)
+    return world_pts_mm, distances
 
 def build_pose_matrix(pos_mm, quat):
-    # 构建位姿矩阵时，也应使用米单位
-    pos_m = pos_mm * MM_TO_M
+    """返回 4x4 位姿矩阵（嵌套列表），单位：毫米"""
     r = R.from_quat(quat)
     T = np.eye(4)
     T[:3,:3] = r.as_matrix()
-    T[:3,3] = pos_m # 使用米单位的位置
-    return T.reshape(-1).tolist()   #16维列表
+    T[:3,3] = pos_mm  # mm
+    # 转为 list of lists，保留 float 类型（JSON 可序列化）
+    return T.tolist()  # [[...], [...], [...], [...]]
 
 # ===================== Nokov 线程 =====================
 def nokov_thread():
@@ -178,17 +165,15 @@ def nokov_thread():
         if frame:
             try:
                 data = frame.contents
-                ts_us = data.iTimeStamp      #微秒级时间戳
+                ts_us = data.iTimeStamp
                 for i in range(data.nRigidBodies):
                     rb = data.RigidBodies[i]    
-                    if rb.x > 9999990: continue  # 无效数据过滤
-                    # Nokov SDK 返回的 pos 是毫米单位
+                    if rb.x > 9999990: continue
                     pos_mm = np.array([rb.x, rb.y, rb.z]) 
-                    quat = np.array([rb.qx, rb.qy, rb.qz, rb.qw])  # 四元数 [x,y,z,w]
+                    quat = np.array([rb.qx, rb.qy, rb.qz, rb.qw])
                     quat = quat / np.linalg.norm(quat)  # 归一化
                     with pose_lock:
                         pose_cache.append((ts_us, pos_mm.copy(), quat.copy()))
-                          # 清理过期数据（滑动窗口）
                         cutoff = ts_us - int(POSE_CACHE_SEC * 1e6)
                         while pose_cache and pose_cache[0][0] < cutoff:
                             pose_cache.popleft()
@@ -202,7 +187,7 @@ def nokov_thread():
 
 # ===================== 时间戳匹配 ======================
 def get_nearest_pose(ts_ns: int):
-    ts_us = ts_ns // 1_000_000                    # ：纳秒 → 微秒 
+    ts_us = ts_ns // 1_000_000
     with pose_lock:
         if not pose_cache:
             return None, None
@@ -210,11 +195,9 @@ def get_nearest_pose(ts_ns: int):
         idx = np.argmin(np.abs(ts_arr - ts_us))
         dt_us = abs(ts_arr[idx] - ts_us)
         dt_ms = dt_us / 1000.0
-
         if dt_ms > SYNC_THRESHOLD_MS:
             print(f"[Warning] 时间戳偏差 {dt_ms:.1f}ms，仍使用最近位姿")
-
-        _, pos_mm, quat = pose_cache[idx] # pos_mm 是毫米单位
+        _, pos_mm, quat = pose_cache[idx]
         return (pos_mm.copy(), quat.copy(), dt_ms), dt_ms
 
 # ===================== UDP 主线程 =====================
@@ -228,7 +211,6 @@ def udp_thread():
 
     while running:
         latest_msg = None
-        # 读取所有可用 UDP 包，只保留最新一帧（避免积压）
         while running:
             try:
                 data, _ = sock.recvfrom(65535)
@@ -259,42 +241,28 @@ def udp_thread():
         if pose_info is None:
             continue
 
-        # auv_pos_mm 是毫米单位
         auv_pos_mm, auv_quat, sync_delay_ms = pose_info 
         
-        # === 激光三角测距 + 坐标变换 ===
         xs = np.array([p["x"] for p in points], dtype=np.float64)
         depths = compute_depths(xs)
         cam_pts_mm = image_to_camera(points, depths)
-        # world_pts_mm 是毫米单位的点云
         world_pts_mm, distances = camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat) 
 
-        # === 核心修改：单位转换与ZMQ发布 ===
-        # 1. 转换单位：毫米 -> 米
-        world_pts_m = world_pts_mm * MM_TO_M
-        auv_pos_m = auv_pos_mm * MM_TO_M
-
-        # 2. 构建ZMQ消息 (使用米单位)
-        # 为了保留4位小数，我们在序列化时处理
-        pose_flat_m = build_pose_matrix(auv_pos_mm, auv_quat) # 内部已转换为米
-        # 扁平化点云并保留4位小数
-        points_flat_m = [round(coord, 4) for coord in world_pts_m.reshape(-1)]
+        # 构建 ZMQ 消息（全部使用毫米单位）
+        pose_matrix = build_pose_matrix(auv_pos_mm, auv_quat)  # 4x4 嵌套列表
+        points_flat_mm = [round(coord, 4) for coord in world_pts_mm.reshape(-1)]
 
         payload = {
             "header": {
-                "timestamp": time.time(),   # 发布时的系统时间戳（秒）
-                "frame_id": "laser",
+                "timestamp": time.time(),
+                "frame_id": "lidar",
                 "frame_idx": frame_idx,
-                # pose_flat_m 已经是米单位的列表
-                "pose": pose_flat_m 
+                "pose": pose_matrix  # 格式: [[...], [...], [...], [...]]
             },
-            # points_flat_m 是保留4位小数的米单位坐标列表
-            "points": points_flat_m 
+            "points": points_flat_mm  # 毫米单位，扁平列表
         }
         zmq_socket.send_json(payload, flags=zmq.NOBLOCK)
-        # ===================================
 
-        # PLY 文件保存 (内部处理了单位转换)
         append_points_to_ply(world_pts_mm) 
 
         print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
@@ -306,12 +274,11 @@ def udp_thread():
 if __name__ == "__main__":
     create_new_ply_file()
     
-    # 启动核心线程 (移除了 visualization_thread)
     threading.Thread(target=nokov_thread, daemon=True).start()
     threading.Thread(target=udp_thread, daemon=True).start()
     
-    print("\n=== 激光结构光实时融合系统 + ZMQ发布  已启动 ===")
-    print("点云数据 (米单位, 4位小数) 通过 ZMQ 发布！\n")
+    print("\n=== 激光结构光实时融合系统 + ZMQ发布（全系统单位：毫米）已启动 ===")
+    print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n")
 
     try:
         while True:
@@ -319,7 +286,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n收到中断信号，正在关闭...")
         running = False
-        # 等待线程结束 (简单等待，实际项目可使用 Event 或 Queue 控制)
         time.sleep(2) 
         zmq_socket.close()
         context.term()
