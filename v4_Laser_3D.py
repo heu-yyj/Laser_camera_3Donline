@@ -36,7 +36,8 @@ f_mm       = fx * PIXEL_SIZE    # 焦距（mm）
 BASELINE_S = 220.0              # 激光三角测距基线长度（mm）
 A_RAD      = np.deg2rad(19.6)  # 激光发射角（弧度）
 
-angles_deg = [199.6, 0, 90.0]
+#AUV marker灯 长815mm 高80 另一个高40-45  2.8 3.2
+angles_deg = [199.6, 3.2, 90.0]
 angles_rad = np.deg2rad(angles_deg)
 R_z = R.from_euler('z', angles_rad[0])      
 R_y = R.from_euler('y', angles_rad[1])     
