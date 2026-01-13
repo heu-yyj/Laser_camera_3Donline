@@ -30,6 +30,16 @@ const int FRAME_INTERVAL = 1 + 1; // 修改这里，例如：想要隔1帧，设
 std::atomic<int> g_frameCounter{0}; // 帧计数器，用于跟踪接收的帧数
 
 
+// --- 新增：相机标定参数 ---
+const double CAMERA_MATRIX_DATA[] = { 4308.8624, 0.0,       1379.5081,
+                                      0.0,       4302.9958, 1031.0359,
+                                      0.0,       0.0,       1.0 };
+const cv::Matx33d CAMERA_MATRIX(CAMERA_MATRIX_DATA);
+
+const double DIST_COEFFS_DATA[] = { 0.26674, -0.15964, -0.00157, -0.01023 };
+const cv::Mat DIST_COEFFS(1, 4, CV_64F, (void*)DIST_COEFFS_DATA);
+// --- END ---
+
 // 图像帧结构
 struct ImageFrame {
     uint64_t timestamp;
@@ -41,10 +51,10 @@ struct ImageFrame {
         : timestamp(ts), data(src, src + frameInfo.nFrameLen), info(frameInfo) {}
 };
 
-// 激光点结构
+// 激光点结构 (保持不变)
 struct LaserPoints {
     uint64_t timestamp;
-    std::vector<cv::Point> points;
+    std::vector<cv::Point2f> points; // 注意：为了undistortPoints兼容性，最好使用Point2f
 };
 
 // 线程安全的图像缓存（最多保留 N 帧）
@@ -65,11 +75,11 @@ private:
 };
 ImageBuffer g_imageBuffer;
 
-// 激光点缓存
+// 激光点缓存 (注意：成员points现在是Point2f类型)
 class LaserBuffer {
 public:
     static constexpr size_t MAX_ENTRIES = 30;
-    void addLaserPoints(uint64_t ts, const std::vector<cv::Point>& pts) {
+    void addLaserPoints(uint64_t ts, const std::vector<cv::Point2f>& pts) { // 参数类型改为Point2f
         std::lock_guard<std::mutex> lock(mutex_);
         if (buffer_.size() >= MAX_ENTRIES) buffer_.erase(buffer_.begin());
         buffer_[ts] = {ts, pts};
@@ -99,10 +109,9 @@ const std::array<std::pair<cv::Scalar, cv::Scalar>, 3> HSV_RANGES = {{
     {cv::Scalar(35, 30, 30),   cv::Scalar(85, 255, 150)}
 }};
 
-
-
+// 提取激光坐标函数 (返回Point2f类型的点)
 void extractLaserCoordinates(const cv::Mat& img, const std::pair<cv::Scalar, cv::Scalar>& hsvRange,
-                             std::vector<cv::Point>& filteredLaserPoints, int rowInterval = 1) {
+                             std::vector<cv::Point2f>& filteredLaserPoints, int rowInterval = 1) { // 返回类型改为Point2f
     cv::Mat hsv, mask;
     cvtColor(img, hsv, cv::COLOR_BGR2HSV); // BGR 转 HSV
     inRange(hsv, hsvRange.first, hsvRange.second, mask); // 应用阈值，生成掩码
@@ -123,10 +132,23 @@ void extractLaserCoordinates(const cv::Mat& img, const std::pair<cv::Scalar, cv:
             }
         }
         if (best_x != -1) { // 如果该行找到了符合条件的点
-            filteredLaserPoints.emplace_back(best_x, y); // 存储坐标
+            filteredLaserPoints.emplace_back(static_cast<float>(best_x), static_cast<float>(y)); // 存储坐标，转换为float
         }
     }
 }
+
+// 去畸变函数
+void undistortLaserPoints(std::vector<cv::Point2f>& points) {
+    if (points.empty()) return;
+
+    std::vector<cv::Point2f> undistorted_points;
+    // 注意：undistortPoints 需要输入 Point2f 类型的点
+    cv::undistortPoints(points, undistorted_points, CAMERA_MATRIX, DIST_COEFFS, cv::noArray(), CAMERA_MATRIX);
+
+    // 将去畸变后的点赋值回原向量
+    points = std::move(undistorted_points);
+}
+
 
 void publishLaserDataAsJson(const LaserPoints& laserData, const char* targetIp, int targetPort) {
     try {
@@ -134,7 +156,10 @@ void publishLaserDataAsJson(const LaserPoints& laserData, const char* targetIp, 
         j["timestamp"] = laserData.timestamp;
         json pointsArray = json::array();
         for (const auto& pt : laserData.points) {
-            pointsArray.push_back({{"x", pt.x}, {"y", pt.y}});
+            // 将浮点坐标转换为整数或保留小数位后发送，取决于下游应用需求
+            // 这里保留两位小数作为示例
+            pointsArray.push_back({{"x", std::round(pt.x * 100.0) / 100.0},
+                                   {"y", std::round(pt.y * 100.0) / 100.0}});
         }
         j["laser_points"] = pointsArray;
 
@@ -203,14 +228,18 @@ void __stdcall imageCallback(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameI
         return;
     }
 
-    // 提取激光点
-    std::vector<cv::Point> laserPoints;
+    // 提取激光点 (现在使用Point2f)
+    std::vector<cv::Point2f> laserPoints;
     for (const auto& range : HSV_RANGES) {
         extractLaserCoordinates(bgr, range, laserPoints, ROW_INTERVAL); // 使用设定的行间隔
         if (laserPoints.size() >= 10) break; // 足够多点就停止尝试其他阈值
     }
 
-    // 发布结果
+    // --- 新增：对提取到的激光点进行去畸变 ---
+    undistortLaserPoints(laserPoints);
+    // --- END ---
+
+    // 发布结果 (注意：传递的是Point2f类型的laserPoints)
     g_laserBuffer.addLaserPoints(devTs, laserPoints);
     publishLaserDataAsJson({devTs, laserPoints}, "192.168.5.110", 8888); // 替换为目标IP
 }
