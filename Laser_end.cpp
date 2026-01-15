@@ -21,7 +21,7 @@ std::atomic<bool> g_exitRequested{false};
 // 行间隔参数 (用户输入的“隔N行” -> 实际处理间隔为 N+1)
 // ROW_INTERVAL = N+1, 其中 N 是用户想要隔开的行数
 // 例如，隔1行(N=1) -> ROW_INTERVAL=2 (处理0, 跳1, 处理2, 跳3, ...)
-const int ROW_INTERVAL = 1 + 1; // 修改这里，例如：想要隔1行，设置为 1+1=2；想要隔2行，设置为 2+1=3；想要不隔(每行都处理)，设置为 0+1=1
+const int ROW_INTERVAL = 0 + 1; // 修改这里，例如：想要隔1行，设置为 1+1=2；想要隔2行，设置为 2+1=3；想要不隔(每行都处理)，设置为 0+1=1
 
 // 帧间隔参数（用户输入的“隔N帧” -> 实际处理间隔为 N+1）
 // FRAME_INTERVAL = M+1, 其中 M 是用户想要隔开的帧数
@@ -29,6 +29,8 @@ const int ROW_INTERVAL = 1 + 1; // 修改这里，例如：想要隔1行，设�
 const int FRAME_INTERVAL = 1 + 1; // 修改这里，例如：想要隔1帧，设置为 1+1=2；想要隔2帧，设置为 2+1=3；想要不隔(每帧都处理)，设置为 0+1=1
 std::atomic<int> g_frameCounter{0}; // 帧计数器，用于跟踪接收的帧数
 
+// 最小点数要求
+const int MIN_POINTS_REQUIRED = 400;
 
 // --- 新增：相机标定参数 ---
 const double CAMERA_MATRIX_DATA[] = { 4308.8624, 0.0,       1379.5081,
@@ -51,10 +53,10 @@ struct ImageFrame {
         : timestamp(ts), data(src, src + frameInfo.nFrameLen), info(frameInfo) {}
 };
 
-// 激光点结构 (保持不变)
+// 激光点结构 (修改为Point类型)
 struct LaserPoints {
     uint64_t timestamp;
-    std::vector<cv::Point2f> points; // 注意：为了undistortPoints兼容性，最好使用Point2f
+    std::vector<cv::Point> points; // 使用整数坐标
 };
 
 // 线程安全的图像缓存（最多保留 N 帧）
@@ -75,11 +77,11 @@ private:
 };
 ImageBuffer g_imageBuffer;
 
-// 激光点缓存 (注意：成员points现在是Point2f类型)
+// 激光点缓存 (修改为Point类型)
 class LaserBuffer {
 public:
     static constexpr size_t MAX_ENTRIES = 30;
-    void addLaserPoints(uint64_t ts, const std::vector<cv::Point2f>& pts) { // 参数类型改为Point2f
+    void addLaserPoints(uint64_t ts, const std::vector<cv::Point>& pts) { // 参数类型改为Point
         std::lock_guard<std::mutex> lock(mutex_);
         if (buffer_.size() >= MAX_ENTRIES) buffer_.erase(buffer_.begin());
         buffer_[ts] = {ts, pts};
@@ -109,9 +111,9 @@ const std::array<std::pair<cv::Scalar, cv::Scalar>, 3> HSV_RANGES = {{
     {cv::Scalar(35, 30, 30),   cv::Scalar(85, 255, 150)}
 }};
 
-// 提取激光坐标函数 (返回Point2f类型的点)
+// 提取激光坐标函数 (返回Point类型的点)
 void extractLaserCoordinates(const cv::Mat& img, const std::pair<cv::Scalar, cv::Scalar>& hsvRange,
-                             std::vector<cv::Point2f>& filteredLaserPoints, int rowInterval = 1) { // 返回类型改为Point2f
+                             std::vector<cv::Point>& filteredLaserPoints, int rowInterval = 1) { // 返回类型改为Point
     cv::Mat hsv, mask;
     cvtColor(img, hsv, cv::COLOR_BGR2HSV); // BGR 转 HSV
     inRange(hsv, hsvRange.first, hsvRange.second, mask); // 应用阈值，生成掩码
@@ -132,21 +134,32 @@ void extractLaserCoordinates(const cv::Mat& img, const std::pair<cv::Scalar, cv:
             }
         }
         if (best_x != -1) { // 如果该行找到了符合条件的点
-            filteredLaserPoints.emplace_back(static_cast<float>(best_x), static_cast<float>(y)); // 存储坐标，转换为float
+            filteredLaserPoints.emplace_back(best_x, y); // 存储坐标，直接使用整数
         }
     }
 }
 
-// 去畸变函数
-void undistortLaserPoints(std::vector<cv::Point2f>& points) {
+// 去畸变函数 (修改为处理Point类型)
+void undistortLaserPoints(std::vector<cv::Point>& points) {
     if (points.empty()) return;
 
-    std::vector<cv::Point2f> undistorted_points;
-    // 注意：undistortPoints 需要输入 Point2f 类型的点
-    cv::undistortPoints(points, undistorted_points, CAMERA_MATRIX, DIST_COEFFS, cv::noArray(), CAMERA_MATRIX);
+    // 将整数点转换为浮点点用于undistortPoints
+    std::vector<cv::Point2f> points_f;
+    points_f.reserve(points.size());
+    for (const auto& pt : points) {
+        points_f.emplace_back(static_cast<float>(pt.x), static_cast<float>(pt.y));
+    }
 
-    // 将去畸变后的点赋值回原向量
-    points = std::move(undistorted_points);
+    std::vector<cv::Point2f> undistorted_points_f;
+    cv::undistortPoints(points_f, undistorted_points_f, CAMERA_MATRIX, DIST_COEFFS, cv::noArray(), CAMERA_MATRIX);
+
+    // 将去畸变后的浮点点转换回整数点
+    points.clear(); // 清空原容器
+    points.reserve(undistorted_points_f.size()); // 预分配空间
+    for (const auto& pt_f : undistorted_points_f) {
+        // 四舍五入到最近的整数
+        points.emplace_back(cv::Point(static_cast<int>(std::round(pt_f.x)), static_cast<int>(std::round(pt_f.y))));
+    }
 }
 
 
@@ -156,10 +169,8 @@ void publishLaserDataAsJson(const LaserPoints& laserData, const char* targetIp, 
         j["timestamp"] = laserData.timestamp;
         json pointsArray = json::array();
         for (const auto& pt : laserData.points) {
-            // 将浮点坐标转换为整数或保留小数位后发送，取决于下游应用需求
-            // 这里保留两位小数作为示例
-            pointsArray.push_back({{"x", std::round(pt.x * 100.0) / 100.0},
-                                   {"y", std::round(pt.y * 100.0) / 100.0}});
+            // 发送整数坐标
+            pointsArray.push_back({{"x", pt.x}, {"y", pt.y}}); // 直接使用整数
         }
         j["laser_points"] = pointsArray;
 
@@ -228,18 +239,33 @@ void __stdcall imageCallback(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameI
         return;
     }
 
-    // 提取激光点 (现在使用Point2f)
-    std::vector<cv::Point2f> laserPoints;
+    // --- 动态HSV范围切换逻辑 ---
+    std::vector<cv::Point> laserPoints;
     for (const auto& range : HSV_RANGES) {
+        // 清空上一轮的点
+        laserPoints.clear();
         extractLaserCoordinates(bgr, range, laserPoints, ROW_INTERVAL); // 使用设定的行间隔
-        if (laserPoints.size() >= 10) break; // 足够多点就停止尝试其他阈值
+        std::cout << "Attempted HSV range, got " << laserPoints.size() << " points." << std::endl;
+
+        if (laserPoints.size() >= MIN_POINTS_REQUIRED) {
+            std::cout << "Got enough points (" << laserPoints.size() << ") with current HSV range." << std::endl;
+            break; // 足够多点就停止尝试其他阈值
+        }
     }
+
+    // 如果遍历完所有范围都未能满足最小点数要求，可以选择处理不足的点或跳过
+    if (laserPoints.size() < MIN_POINTS_REQUIRED) {
+        std::cout << "Warning: Only " << laserPoints.size() << " points extracted after trying all HSV ranges. Publishing anyway." << std::endl;
+        // 可以选择 return; 来跳过发布，如果点太少无法接受的话
+    }
+
+    // --- END ---
 
     // --- 新增：对提取到的激光点进行去畸变 ---
     undistortLaserPoints(laserPoints);
     // --- END ---
 
-    // 发布结果 (注意：传递的是Point2f类型的laserPoints)
+    // 发布结果 (注意：传递的是Point类型的laserPoints)
     g_laserBuffer.addLaserPoints(devTs, laserPoints);
     publishLaserDataAsJson({devTs, laserPoints}, "192.168.5.110", 8888); // 替换为目标IP
 }
