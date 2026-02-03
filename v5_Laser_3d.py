@@ -343,10 +343,9 @@ if __name__ == "__main__":
     create_new_ply_file()
     
     threading.Thread(target=nokov_thread, daemon=True).start()
-    threading.Thread(target=udp_thread, daemon=True).start()
-    
+    threading.Thread(target=udp_thread, daemon=True).start()  
     print("\n=== 激光结构光实时融合系统 + ZMQ发布（全系统单位：毫米）已启动 ===")
-    print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n")
+    print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n") 
     print("原始图像点数据将以时间戳命名保存到 'D:/工作/LaserRawImagePoints' 目录。")
 
     try:

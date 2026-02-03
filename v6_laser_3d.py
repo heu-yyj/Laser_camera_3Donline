@@ -21,8 +21,14 @@ import atexit
 UDP_IP          = "0.0.0.0"
 UDP_PORT        = 8888
 NOKOV_SERVER_IP = "10.104.21.38"  # 动捕系统位姿广播IP
-ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP
-ZMQ_PORT        = 5557
+
+# --- 修改 ZMQ 配置 ---
+# 定义多个 ZMQ 服务端地址和端口
+ZMQ_SERVERS = [
+    {"ip": "10.104.21.145", "port": 5557},
+    # {"ip": "10.104.21.146", "port": 5557}, # 如果还有其他接收端，取消注释并修改IP和端口
+    # {"ip": "another_ip_address", "port": port_number},
+]
 
 # 相机内参矩阵（像素单位）
 fx, fy = 4308.8624, 4302.9958
@@ -37,21 +43,22 @@ BASELINE_S = 220.0              # 激光三角测距基线长度（mm）
 A_RAD      = np.deg2rad(19.6)  # 激光发射角（弧度）
 
 #AUV marker灯 长815mm 高80 另一个高40-45  2.8 3.2
-angles_deg = [199.6, 3.2, 90.0]
+angles_deg = [199.6, 0, 90.0]
 angles_rad = np.deg2rad(angles_deg)
 R_z = R.from_euler('z', angles_rad[0])      
 R_y = R.from_euler('y', angles_rad[1])     
 R_x = R.from_euler('x', angles_rad[2])      
 
 # intrinsic zyx = R_z * R_y * R_x
-R_A = (R_z * R_y * R_x)
-R_cam2auv = R_A.as_matrix().T  # 转置得到相机到AUV的旋转矩阵
+R_auv2cam = (R_z * R_y * R_x)
+#还是应该使用AUV到相机的矩阵
+#R_cam2auv = R_A.as_matrix().T  # 转置得到相机到AUV的旋转矩阵
 
 # T_auv2cam = np.array([424.0, 27.4, 247.6]) - np.array([35, -12.4, -157.4]) # 从AUV到相机到的平移 (mm)
 T_cam_in_auv =np.array([389.0, 39.8, 405.0])  # 相机在AUV坐标系中的位置 (mm)
 
 POSE_CACHE_SEC    = 5.0         # 位姿缓存时间窗口（秒）
-SYNC_THRESHOLD_MS = 100         # 时间戳同步阈值（毫秒）
+SYNC_THRESHOLD_MS = 10         # 时间戳同步阈值（毫秒）
 
 # 全局状态
 running = True
@@ -65,13 +72,58 @@ ply_file = None
 total_points = 0
 ply_lock = threading.Lock()
 
-# ZeroMQ
+# --- 修改 ZeroMQ 初始化 ---
+# 创建一个上下文，所有套接字共享此上下文
 context = zmq.Context()
-zmq_socket = context.socket(zmq.PUSH)
-zmq_socket.set_hwm(0)
-zmq_socket.set(zmq.CONFLATE, 1)
-zmq_socket.connect(f"tcp://{ZMQ_SERVER_IP}:{ZMQ_PORT}")
-print(f"[ZMQ] 已连接 {ZMQ_SERVER_IP}:{ZMQ_PORT}")
+zmq_sockets = [] # 存储所有连接的套接字
+
+for server in ZMQ_SERVERS:
+    socket = context.socket(zmq.PUSH)
+    socket.set_hwm(0)
+    socket.set(zmq.CONFLATE, 1) # 启用 CONFLATE，只保留最新消息
+    connect_addr = f"tcp://{server['ip']}:{server['port']}"
+    socket.connect(connect_addr)
+    zmq_sockets.append(socket)
+    print(f"[ZMQ] 已连接到服务端 {connect_addr}")
+
+# ===================== 原始图像点数据保存函数 ======================
+# (新增) 用于保存原始图像点坐标到文件
+def save_raw_image_points(laser_points, timestamp_ns):
+    """
+    保存原始图像点坐标到一个以时间戳命名的文件中。
+    每个时间戳对应一个文件。
+    文件名格式: image_points_{timestamp_ns}.txt
+    文件内容: 每行一个点的 x, y 坐标，以空格分隔。
+    """
+    # 确定保存目录
+     # 生成当前日期的文件夹名 (例如: 20260116)
+    date_str = datetime.now().strftime("%Y%m%d")
+    
+    # 生成当前时间的文件夹名 (例如: LaserRawImagePoints_171230)
+    time_str = datetime.now().strftime("%H%M%S")
+    subfolder_name = f"LaserRawImagePoints_{time_str}"
+    
+    # 构造完整的保存目录路径
+    base_dir = "D:/工作/" # 基础目录
+    raw_data_dir = os.path.join(base_dir, date_str, subfolder_name)
+    
+    # 创建目录（如果不存在）
+    os.makedirs(raw_data_dir, exist_ok=True)
+
+    # 构造文件名
+    filename = f"image_points_{timestamp_ns}.txt"
+    filepath = os.path.join(raw_data_dir, filename)
+
+    # 写入文件
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for point in laser_points:
+                # 假设 point 是一个字典，包含 'x' 和 'y' 键
+                # 根据你提供的代码，格式是正确的
+                f.write(f"{point['x']:.6f} {point['y']:.6f}\n") # 保留6位小数，可根据需要调整
+        print(f"[RawData] 图像点已保存到: {filepath} (共 {len(laser_points)} 个点)")
+    except Exception as e:
+        print(f"[RawData] 保存图像点数据失败: {e} (时间戳: {timestamp_ns})")
 
 # ===================== PLY 文件函数 ======================
 def create_new_ply_file():
@@ -137,7 +189,7 @@ def image_to_camera(points_img, depths):
     return pts
 
 def camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat):
-    auv_pts_mm = (R_cam2auv @ cam_pts_mm.T).T + T_cam_in_auv  # 转到AUV坐标系下
+    auv_pts_mm = (R_auv2cam.as_matrix() @ cam_pts_mm.T).T + T_cam_in_auv  # 转到AUV坐标系下
     r = R.from_quat(auv_quat)  # [x, y, z, w]
     R_w = r.as_matrix()
     world_pts_mm = (R_w @ auv_pts_mm.T).T + auv_pos_mm 
@@ -235,6 +287,10 @@ def udp_thread():
             first_image_received = True
             print(f"[Laser] 收到第一帧激光点，时间戳: {ts_ns} ns")
 
+        # (修改) 在处理 Nokov 位姿之前，先保存原始图像点数据
+        # 这样即使没有位姿，原始数据也会被保存下来
+        save_raw_image_points(points, ts_ns)
+
         if not first_pose_received:
             print("等待 Nokov 位姿就绪...")
             continue
@@ -251,25 +307,25 @@ def udp_thread():
         world_pts_mm, distances = camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat) 
 
 
-        # ======== 调试打印开始 ========
-        print(f"\n[DEBUG Frame {frame_idx:05d}]")
-        print(f"  Laser Points Count: {len(points)}")
-        if points:
-            xs = np.array([p["x"] for p in points], dtype=np.float64)
-            print(f"  X coords - min: {xs.min():.2f}, max: {xs.max():.2f}, cx: {cx:.2f}")
+        # # ======== 调试打印开始 ========
+        # print(f"\n[DEBUG Frame {frame_idx:05d}]")
+        # print(f"  Laser Points Count: {len(points)}")
+        # if points:
+        #     xs = np.array([p["x"] for p in points], dtype=np.float64)
+        #     print(f"  X coords - min: {xs.min():.2f}, max: {xs.max():.2f}, cx: {cx:.2f}")
         
-        print(f"  Computed Depths - min: {depths.min():.2f}, max: {depths.max():.2f}, mean: {depths.mean():.2f}")
-        print(f"  Depths - negative count: {(depths < 0).sum()}, zero count: {(depths == 0).sum()}, positive count: {(depths > 0).sum()}")
+        # print(f"  Computed Depths - min: {depths.min():.2f}, max: {depths.max():.2f}, mean: {depths.mean():.2f}")
+        # print(f"  Depths - negative count: {(depths < 0).sum()}, zero count: {(depths == 0).sum()}, positive count: {(depths > 0).sum()}")
         
-        print(f"  Camera Points - Z coords min: {cam_pts_mm[:, 2].min():.2f}, max: {cam_pts_mm[:, 2].max():.2f}, mean: {cam_pts_mm[:, 2].mean():.2f}")
-        print(f"  Camera Points - Z negative count: {(cam_pts_mm[:, 2] < 0).sum()}")
+        # print(f"  Camera Points - Z coords min: {cam_pts_mm[:, 2].min():.2f}, max: {cam_pts_mm[:, 2].max():.2f}, mean: {cam_pts_mm[:, 2].mean():.2f}")
+        # print(f"  Camera Points - Z negative count: {(cam_pts_mm[:, 2] < 0).sum()}")
 
-        print(f"  AUV Pose - Position: [{auv_pos_mm[0]:.2f}, {auv_pos_mm[1]:.2f}, {auv_pos_mm[2]:.2f}]")
-        # print(f"  AUV Quat: [{auv_quat[0]:.4f}, {auv_quat[1]:.4f}, {auv_quat[2]:.4f}, {auv_quat[3]:.4f}]") # 可选打印
+        # print(f"  AUV Pose - Position: [{auv_pos_mm[0]:.2f}, {auv_pos_mm[1]:.2f}, {auv_pos_mm[2]:.2f}]")
+        # # print(f"  AUV Quat: [{auv_quat[0]:.4f}, {auv_quat[1]:.4f}, {auv_quat[2]:.4f}, {auv_quat[3]:.4f}]") # 可选打印
 
-        print(f"  World Points - Z coords min: {world_pts_mm[:, 2].min():.2f}, max: {world_pts_mm[:, 2].max():.2f}, mean: {world_pts_mm[:, 2].mean():.2f}")
-        print(f"  World Points - Z relative to AUV (min, max): {world_pts_mm[:, 2].min() - auv_pos_mm[2]:.2f}, {world_pts_mm[:, 2].max() - auv_pos_mm[2]:.2f}")
-        # ======== 调试打印结束 ========
+        # print(f"  World Points - Z coords min: {world_pts_mm[:, 2].min():.2f}, max: {world_pts_mm[:, 2].max():.2f}, mean: {world_pts_mm[:, 2].mean():.2f}")
+        # print(f"  World Points - Z relative to AUV (min, max): {world_pts_mm[:, 2].min() - auv_pos_mm[2]:.2f}, {world_pts_mm[:, 2].max() - auv_pos_mm[2]:.2f}")
+        # # ======== 调试打印结束 ========
 
 
         # 构建 ZMQ 消息（全部使用毫米单位）
@@ -285,12 +341,32 @@ def udp_thread():
             },
             "points": points_flat_mm  # 毫米单位，扁平列表
         }
-        zmq_socket.send_json(payload, flags=zmq.NOBLOCK)
+
+        # --- 修改 ZMQ 发送逻辑 ---
+        # 遍历所有连接的套接字并发送相同的消息
+        send_results = []
+        for i, socket in enumerate(zmq_sockets):
+            try:
+                socket.send_json(payload, flags=zmq.NOBLOCK)
+                send_results.append(f"成功发送到服务端 {i+1} ({ZMQ_SERVERS[i]['ip']}:{ZMQ_SERVERS[i]['port']})")
+            except zmq.Again:
+                # HWM溢出或网络问题
+                send_results.append(f"警告: 发送到服务端 {i+1} 失败 (可能队列满或网络断开)")
+            except Exception as e:
+                send_results.append(f"错误: 发送到服务端 {i+1} 异常: {e}")
+        
+        # 打印发送结果摘要
+        success_count = sum(1 for res in send_results if res.startswith("成功"))
+        total_count = len(zmq_sockets)
+        print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
+              f"sync_delay: {sync_delay_ms:+.1f}ms | "
+              f"发送结果: {success_count}/{total_count} 个服务端成功 | "
+              f"{os.path.basename(current_ply_path)}")
+        # 如果需要详细信息，可以打印 send_results 列表
+        # for res in send_results: print(f"  - {res}")
+
 
         append_points_to_ply(world_pts_mm) 
-
-        print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
-              f"sync_delay: {sync_delay_ms:+.1f}ms | {os.path.basename(current_ply_path)}")
 
         frame_idx += 1
 
@@ -299,10 +375,13 @@ if __name__ == "__main__":
     create_new_ply_file()
     
     threading.Thread(target=nokov_thread, daemon=True).start()
-    threading.Thread(target=udp_thread, daemon=True).start()
-    
+    threading.Thread(target=udp_thread, daemon=True).start()  
     print("\n=== 激光结构光实时融合系统 + ZMQ发布（全系统单位：毫米）已启动 ===")
-    print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n")
+    print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n") 
+    print("原始图像点数据将以时间戳命名保存到 'D:/工作/LaserRawImagePoints' 目录。")
+    print(f"ZMQ 数据将发送到以下服务端:")
+    for i, server in enumerate(ZMQ_SERVERS):
+        print(f"  - 服务端 {i+1}: tcp://{server['ip']}:{server['port']}")
 
     try:
         while True:
@@ -311,7 +390,9 @@ if __name__ == "__main__":
         print("\n收到中断信号，正在关闭...")
         running = False
         time.sleep(2) 
-        zmq_socket.close()
-        context.term()
+        # 关闭所有 ZMQ 套接字
+        for socket in zmq_sockets:
+            socket.close()
+        context.term() # 终止上下文
         print("资源已释放，程序退出。")
         sys.exit(0)
