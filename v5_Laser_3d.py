@@ -207,7 +207,7 @@ def nokov_thread():
         if frame:
             try:
                 data = frame.contents
-                ts_us = data.iTimeStamp
+                ts_ms = data.iTimeStamp
                 for i in range(data.nRigidBodies):
                     rb = data.RigidBodies[i]    
                     if rb.x > 9999990: continue
@@ -215,13 +215,13 @@ def nokov_thread():
                     quat = np.array([rb.qx, rb.qy, rb.qz, rb.qw])
                     quat = quat / np.linalg.norm(quat)  # 归一化
                     with pose_lock:
-                        pose_cache.append((ts_us, pos_mm.copy(), quat.copy()))
-                        cutoff = ts_us - int(POSE_CACHE_SEC * 1e6)
+                        pose_cache.append((ts_ms, pos_mm.copy(), quat.copy()))
+                        cutoff = ts_ms - int(POSE_CACHE_SEC * 1e3)
                         while pose_cache and pose_cache[0][0] < cutoff:
                             pose_cache.popleft()
                     if not first_pose_received:
                         first_pose_received = True
-                        print(f"[NOKOV] 收到第一帧位姿，时间戳: {ts_us} μs")
+                        print(f"[NOKOV] 收到第一帧位姿，时间戳: {ts_ms} ms")
             finally:
                 client.PyNokovFreeFrame(frame)
         else:
@@ -229,14 +229,13 @@ def nokov_thread():
 
 # ===================== 时间戳匹配 ======================
 def get_nearest_pose(ts_ns: int):
-    ts_us = ts_ns // 1_000_000
+    ts_ms = ts_ns / 1_000_000
     with pose_lock:
         if not pose_cache:
             return None, None
         ts_arr = np.array([t for t, _, _ in pose_cache])
-        idx = np.argmin(np.abs(ts_arr - ts_us))
-        dt_us = abs(ts_arr[idx] - ts_us)
-        dt_ms = dt_us / 1000.0
+        idx = np.argmin(np.abs(ts_arr - ts_ms))
+        dt_ms = abs(ts_arr[idx] - ts_ms)
         if dt_ms > SYNC_THRESHOLD_MS:
             print(f"[Warning] 时间戳偏差 {dt_ms:.1f}ms，仍使用最近位姿")
         _, pos_mm, quat = pose_cache[idx]
@@ -295,25 +294,25 @@ def udp_thread():
         world_pts_mm, distances = camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat) 
 
 
-        # ======== 调试打印开始 ========
-        print(f"\n[DEBUG Frame {frame_idx:05d}]")
-        print(f"  Laser Points Count: {len(points)}")
-        if points:
-            xs = np.array([p["x"] for p in points], dtype=np.float64)
-            print(f"  X coords - min: {xs.min():.2f}, max: {xs.max():.2f}, cx: {cx:.2f}")
+        # # ======== 调试打印开始 ========
+        # print(f"\n[DEBUG Frame {frame_idx:05d}]")
+        # print(f"  Laser Points Count: {len(points)}")
+        # if points:
+        #     xs = np.array([p["x"] for p in points], dtype=np.float64)
+        #     print(f"  X coords - min: {xs.min():.2f}, max: {xs.max():.2f}, cx: {cx:.2f}")
         
-        print(f"  Computed Depths - min: {depths.min():.2f}, max: {depths.max():.2f}, mean: {depths.mean():.2f}")
-        print(f"  Depths - negative count: {(depths < 0).sum()}, zero count: {(depths == 0).sum()}, positive count: {(depths > 0).sum()}")
+        # print(f"  Computed Depths - min: {depths.min():.2f}, max: {depths.max():.2f}, mean: {depths.mean():.2f}")
+        # print(f"  Depths - negative count: {(depths < 0).sum()}, zero count: {(depths == 0).sum()}, positive count: {(depths > 0).sum()}")
         
-        print(f"  Camera Points - Z coords min: {cam_pts_mm[:, 2].min():.2f}, max: {cam_pts_mm[:, 2].max():.2f}, mean: {cam_pts_mm[:, 2].mean():.2f}")
-        print(f"  Camera Points - Z negative count: {(cam_pts_mm[:, 2] < 0).sum()}")
+        # print(f"  Camera Points - Z coords min: {cam_pts_mm[:, 2].min():.2f}, max: {cam_pts_mm[:, 2].max():.2f}, mean: {cam_pts_mm[:, 2].mean():.2f}")
+        # print(f"  Camera Points - Z negative count: {(cam_pts_mm[:, 2] < 0).sum()}")
 
-        print(f"  AUV Pose - Position: [{auv_pos_mm[0]:.2f}, {auv_pos_mm[1]:.2f}, {auv_pos_mm[2]:.2f}]")
-        # print(f"  AUV Quat: [{auv_quat[0]:.4f}, {auv_quat[1]:.4f}, {auv_quat[2]:.4f}, {auv_quat[3]:.4f}]") # 可选打印
+        # print(f"  AUV Pose - Position: [{auv_pos_mm[0]:.2f}, {auv_pos_mm[1]:.2f}, {auv_pos_mm[2]:.2f}]")
+        # # print(f"  AUV Quat: [{auv_quat[0]:.4f}, {auv_quat[1]:.4f}, {auv_quat[2]:.4f}, {auv_quat[3]:.4f}]") # 可选打印
 
-        print(f"  World Points - Z coords min: {world_pts_mm[:, 2].min():.2f}, max: {world_pts_mm[:, 2].max():.2f}, mean: {world_pts_mm[:, 2].mean():.2f}")
-        print(f"  World Points - Z relative to AUV (min, max): {world_pts_mm[:, 2].min() - auv_pos_mm[2]:.2f}, {world_pts_mm[:, 2].max() - auv_pos_mm[2]:.2f}")
-        # ======== 调试打印结束 ========
+        # print(f"  World Points - Z coords min: {world_pts_mm[:, 2].min():.2f}, max: {world_pts_mm[:, 2].max():.2f}, mean: {world_pts_mm[:, 2].mean():.2f}")
+        # print(f"  World Points - Z relative to AUV (min, max): {world_pts_mm[:, 2].min() - auv_pos_mm[2]:.2f}, {world_pts_mm[:, 2].max() - auv_pos_mm[2]:.2f}")
+        # # ======== 调试打印结束 ========
 
 
         # 构建 ZMQ 消息（全部使用毫米单位）

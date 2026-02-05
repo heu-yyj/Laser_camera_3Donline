@@ -168,7 +168,7 @@ def nokov_thread():
         if frame:
             try:
                 data = frame.contents
-                ts_us = data.iTimeStamp
+                ts_ms = data.iTimeStamp
                 for i in range(data.nRigidBodies):
                     rb = data.RigidBodies[i]    
                     if rb.x > 9999990: continue
@@ -176,13 +176,13 @@ def nokov_thread():
                     quat = np.array([rb.qx, rb.qy, rb.qz, rb.qw])
                     quat = quat / np.linalg.norm(quat)  # 归一化
                     with pose_lock:
-                        pose_cache.append((ts_us, pos_mm.copy(), quat.copy()))
-                        cutoff = ts_us - int(POSE_CACHE_SEC * 1e6)
+                        pose_cache.append((ts_ms, pos_mm.copy(), quat.copy()))
+                        cutoff = ts_ms - int(POSE_CACHE_SEC * 1e3)
                         while pose_cache and pose_cache[0][0] < cutoff:
                             pose_cache.popleft()
                     if not first_pose_received:
                         first_pose_received = True
-                        print(f"[NOKOV] 收到第一帧位姿，时间戳: {ts_us} μs")
+                        print(f"[NOKOV] 收到第一帧位姿，时间戳: {ts_ms} ms")
             finally:
                 client.PyNokovFreeFrame(frame)
         else:
@@ -190,14 +190,13 @@ def nokov_thread():
 
 # ===================== 时间戳匹配 ======================
 def get_nearest_pose(ts_ns: int):
-    ts_us = ts_ns // 1_000_000
+    ts_ms = ts_ns / 1_000_000
     with pose_lock:
         if not pose_cache:
             return None, None
         ts_arr = np.array([t for t, _, _ in pose_cache])
-        idx = np.argmin(np.abs(ts_arr - ts_us))
-        dt_us = abs(ts_arr[idx] - ts_us)
-        dt_ms = dt_us / 1000.0
+        idx = np.argmin(np.abs(ts_arr - ts_ms))
+        dt_ms = abs(ts_arr[idx] - ts_ms)  # Convert ms back to us for comparison
         if dt_ms > SYNC_THRESHOLD_MS:
             print(f"[Warning] 时间戳偏差 {dt_ms:.1f}ms，仍使用最近位姿")
         _, pos_mm, quat = pose_cache[idx]
