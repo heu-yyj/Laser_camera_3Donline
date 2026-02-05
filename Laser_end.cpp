@@ -245,10 +245,10 @@ void __stdcall imageCallback(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameI
         // 清空上一轮的点
         laserPoints.clear();
         extractLaserCoordinates(bgr, range, laserPoints, ROW_INTERVAL); // 使用设定的行间隔
-        std::cout << "Attempted HSV range, got " << laserPoints.size() << " points." << std::endl;
+        //std::cout << "Attempted HSV range, got " << laserPoints.size() << " points." << std::endl;
 
         if (laserPoints.size() >= MIN_POINTS_REQUIRED) {
-            std::cout << "Got enough points (" << laserPoints.size() << ") with current HSV range." << std::endl;
+            //std::cout << "Got enough points (" << laserPoints.size() << ") with current HSV range." << std::endl;
             break; // 足够多点就停止尝试其他阈值
         }
     }
