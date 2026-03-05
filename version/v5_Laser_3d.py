@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# 相较于v4版本，该版本增加了保存原始图像点数据的功能
 """
 激光 + Nokov + ZeroMQ 实时数据发布（全系统单位：毫米 mm）
 """
@@ -21,14 +22,8 @@ import atexit
 UDP_IP          = "0.0.0.0"
 UDP_PORT        = 8888
 NOKOV_SERVER_IP = "10.104.21.38"  # 动捕系统位姿广播IP
-
-# --- 修改 ZMQ 配置 ---
-# 定义多个 ZMQ 服务端地址和端口
-ZMQ_SERVERS = [
-    {"ip": "10.104.21.145", "port": 5557},
-    # {"ip": "10.104.21.146", "port": 5557}, # 如果还有其他接收端，取消注释并修改IP和端口
-    # {"ip": "another_ip_address", "port": port_number},
-]
+ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP
+ZMQ_PORT        = 5557
 
 # 相机内参矩阵（像素单位）
 fx, fy = 4308.8624, 4302.9958
@@ -72,19 +67,13 @@ ply_file = None
 total_points = 0
 ply_lock = threading.Lock()
 
-# --- 修改 ZeroMQ 初始化 ---
-# 创建一个上下文，所有套接字共享此上下文
+# ZeroMQ
 context = zmq.Context()
-zmq_sockets = [] # 存储所有连接的套接字
-
-for server in ZMQ_SERVERS:
-    socket = context.socket(zmq.PUSH)
-    socket.set_hwm(0)
-    socket.set(zmq.CONFLATE, 1) # 启用 CONFLATE，只保留最新消息
-    connect_addr = f"tcp://{server['ip']}:{server['port']}"
-    socket.connect(connect_addr)
-    zmq_sockets.append(socket)
-    print(f"[ZMQ] 已连接到服务端 {connect_addr}")
+zmq_socket = context.socket(zmq.PUSH)
+zmq_socket.set_hwm(0)
+zmq_socket.set(zmq.CONFLATE, 1)
+zmq_socket.connect(f"tcp://{ZMQ_SERVER_IP}:{ZMQ_PORT}")
+print(f"[ZMQ] 已连接 {ZMQ_SERVER_IP}:{ZMQ_PORT}")
 
 # ===================== 原始图像点数据保存函数 ======================
 # (新增) 用于保存原始图像点坐标到文件
@@ -228,7 +217,7 @@ def nokov_thread():
                     quat = quat / np.linalg.norm(quat)  # 归一化
                     with pose_lock:
                         pose_cache.append((ts_ms, pos_mm.copy(), quat.copy()))
-                        cutoff = ts_ms - int(POSE_CACHE_SEC * 1e3)  # Convert sec to ms
+                        cutoff = ts_ms - int(POSE_CACHE_SEC * 1e3)
                         while pose_cache and pose_cache[0][0] < cutoff:
                             pose_cache.popleft()
                     if not first_pose_received:
@@ -340,32 +329,12 @@ def udp_thread():
             },
             "points": points_flat_mm  # 毫米单位，扁平列表
         }
-
-        # --- 修改 ZMQ 发送逻辑 ---
-        # 遍历所有连接的套接字并发送相同的消息
-        send_results = []
-        for i, socket in enumerate(zmq_sockets):
-            try:
-                socket.send_json(payload, flags=zmq.NOBLOCK)
-                send_results.append(f"成功发送到服务端 {i+1} ({ZMQ_SERVERS[i]['ip']}:{ZMQ_SERVERS[i]['port']})")
-            except zmq.Again:
-                # HWM溢出或网络问题
-                send_results.append(f"警告: 发送到服务端 {i+1} 失败 (可能队列满或网络断开)")
-            except Exception as e:
-                send_results.append(f"错误: 发送到服务端 {i+1} 异常: {e}")
-        
-        # 打印发送结果摘要
-        success_count = sum(1 for res in send_results if res.startswith("成功"))
-        total_count = len(zmq_sockets)
-        print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
-              f"sync_delay: {sync_delay_ms:+.1f}ms | "
-              f"发送结果: {success_count}/{total_count} 个服务端成功 | "
-              f"{os.path.basename(current_ply_path)}")
-        # 如果需要详细信息，可以打印 send_results 列表
-        # for res in send_results: print(f"  - {res}")
-
+        zmq_socket.send_json(payload, flags=zmq.NOBLOCK)
 
         append_points_to_ply(world_pts_mm) 
+
+        print(f"[Published] Frame {frame_idx:05d} | {len(points)} pts | "
+              f"sync_delay: {sync_delay_ms:+.1f}ms | {os.path.basename(current_ply_path)}")
 
         frame_idx += 1
 
@@ -378,9 +347,6 @@ if __name__ == "__main__":
     print("\n=== 激光结构光实时融合系统 + ZMQ发布（全系统单位：毫米）已启动 ===")
     print("点云与位姿均以毫米（mm）为单位通过 ZMQ 发布！\n") 
     print("原始图像点数据将以时间戳命名保存到 'D:/工作/LaserRawImagePoints' 目录。")
-    print(f"ZMQ 数据将发送到以下服务端:")
-    for i, server in enumerate(ZMQ_SERVERS):
-        print(f"  - 服务端 {i+1}: tcp://{server['ip']}:{server['port']}")
 
     try:
         while True:
@@ -389,9 +355,7 @@ if __name__ == "__main__":
         print("\n收到中断信号，正在关闭...")
         running = False
         time.sleep(2) 
-        # 关闭所有 ZMQ 套接字
-        for socket in zmq_sockets:
-            socket.close()
-        context.term() # 终止上下文
+        zmq_socket.close()
+        context.term()
         print("资源已释放，程序退出。")
         sys.exit(0)

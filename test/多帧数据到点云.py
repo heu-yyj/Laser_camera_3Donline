@@ -3,7 +3,6 @@
 读取图像坐标TXT文件夹，按激光+动捕逻辑转换到世界坐标系，并保存为PLY文件
 支持批量处理，根据文件名时间戳匹配位姿文件，并生成单帧与总点云。
 此版本使用标准库csv模块处理位姿文件，无需pandas。
-添加了 ZeroMQ 发送功能，将每帧处理后的点云和位姿信息发送出去。
 """
 
 import numpy as np
@@ -12,8 +11,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 import csv # 使用标准库csv模块
-import time
-import zmq # 导入 ZeroMQ
 
 # ========================= 从原始代码复制的配置区 (保持与实时脚本一致) =========================
 # 相机内参矩阵（像素单位）
@@ -30,10 +27,10 @@ A_RAD      = np.deg2rad(19.6)  # 激光发射角（弧度）
 
 # AUV marker灯 长815mm 高80 另一个高40-45  2.8 3.2
 # --- 关键修改：使用与实时脚本相同的 angles_deg ---
-angles_deg = [199.6, 0, 90.0] # 修改为包含 3.2 度的 Y 轴旋转
+angles_deg = [199.6, 0, 90.0] 
 # ---
 angles_rad = np.deg2rad(angles_deg)
-R_z = R.from_euler('z', angles_rad[0])
+R_z = R.from_euler('z', angles_rad[0]+np.deg2rad(25))  # 修正0.6度
 R_y = R.from_euler('y', angles_rad[1])
 R_x = R.from_euler('x', angles_rad[2])
 
@@ -42,16 +39,6 @@ R_A = (R_z * R_y * R_x)
 #R_cam2auv = R_A.as_matrix().T  # 转置得到相机到AUV的旋转矩阵
 
 T_cam_in_auv = np.array([389.0, 39.8, 405.0])  # 相机在AUV坐标系中的位置 (mm)
-
-# --- ZeroMQ 配置 ---
-ZMQ_SERVER_IP = "192.168.1.101"  # ZMQ服o务器IP10.101.30.58
-# ZMQ_SERVER_IP = [
-#     # {"ip": "10.101.30.58", "port": 5557},
-#     {"ip": "192.168.1.101", "port": 5557}, # 如果还有其他接收端，取消注释并修改IP和端口
-#     # {"ip": "another_ip_address", "port": port_number},
-# ]
-ZMQ_PORT = 5557  # ZMQ端口Z
-# --------------------
 
 # ===================== 激光处理函数 =====================
 def compute_depths(x_coords):
@@ -293,57 +280,11 @@ def extract_timestamp_from_filename(filepath):
         print(f"  - 文件名 '{stem}' 不符合 'image_points_*.txt' 格式。")
         return None
 
-# --- ZeroMQ 相关函数 ---
-def build_pose_matrix(pos_mm, quat):
-    """返回 4x4 位姿矩阵（嵌套列表），单位：毫米"""
-    r = R.from_quat(quat)
-    T = np.eye(4)
-    T[:3,:3] = r.as_matrix()
-    T[:3,3] = pos_mm  # mm
-    # 转为 list of lists，保留 float 类型（JSON 可序列化）
-    return T.tolist()  # [[...], [...], [...], [...]]
-
-def initialize_zmq():
-    """初始化 ZeroMQ 客户端"""
-    ctx = zmq.Context()
-    sock = ctx.socket(zmq.PUSH)
-    # sock.set_hwm(0) # 可选：取消高水位标记
-    # sock.set(zmq.CONFLATE, 1) # 可选：只保留最新消息
-    sock.connect(f"tcp://{ZMQ_SERVER_IP}:{ZMQ_PORT}")
-    print(f"[ZMQ] 已连接 {ZMQ_SERVER_IP}:{ZMQ_PORT}")
-    return ctx, sock
-
-def send_zmq_message(sock, world_pts_mm, auv_pos_mm, auv_quat, frame_idx):
-    """发送 ZMQ 消息"""
-    pose_matrix = build_pose_matrix(auv_pos_mm, auv_quat)  # 4x4 嵌套列表
-    points_flat_mm = [round(coord, 4) for coord in world_pts_mm.reshape(-1)] # 毫米单位，扁平列表
-
-    payload = {
-        "header": {
-            "timestamp": time.time(),
-            "frame_id": "lidar",
-            "frame_idx": frame_idx,
-            "pose": pose_matrix  # 格式: [[...], [...], [...], [...]]
-        },
-        "points": points_flat_mm  # 毫米单位，扁平列表
-    }
-    try:
-        sock.send_json(payload, flags=zmq.NOBLOCK)
-        print(f"[ZMQ] Published Frame {frame_idx:05d} | {len(world_pts_mm)} pts")
-    except zmq.Again:
-        print(f"[ZMQ Warning] 发送失败，消息队列可能已满 (Frame {frame_idx})")
-
-def finalize_zmq(ctx):
-    """关闭 ZeroMQ 客户端"""
-    ctx.destroy() # 这会关闭所有相关的 sockets
-    print("[ZMQ] 连接已关闭。")
-
 # ... (其他代码不变) ...
 
-def batch_process_images_and_poses(image_folder_path, pose_file_path, output_base_dir="D:/工作/LaserData", zmq_enabled=True):
+def batch_process_images_and_poses(image_folder_path, pose_file_path, output_base_dir="D:/工作/LaserData"):
     """
     批量处理图像点文件夹和位姿文件，生成单帧及总点云PLY文件。
-    可选择启用 ZMQ 发送。
     """
     image_folder = Path(image_folder_path)
     if not image_folder.exists():
@@ -356,15 +297,7 @@ def batch_process_images_and_poses(image_folder_path, pose_file_path, output_bas
         print("位姿文件加载失败，终止处理。")
         return
 
-    # 2. 初始化 ZMQ (如果启用)
-    zmq_context = None
-    zmq_socket = None
-    if zmq_enabled:
-        zmq_context, zmq_socket = initialize_zmq()
-    else:
-        print("[ZMQ] ZMQ 发送已禁用。")
-
-    # 3. 获取所有图像点文件
+    # 2. 获取所有图像点文件
     txt_files = sorted(list(image_folder.glob("image_points_*.txt")))
     if not txt_files:
         print(f"在文件夹 '{image_folder_path}' 中未找到任何 'image_points_*.txt' 文件。")
@@ -373,9 +306,8 @@ def batch_process_images_and_poses(image_folder_path, pose_file_path, output_bas
     print(f"找到 {len(txt_files)} 个图像点文件，开始批量处理...")
 
     all_world_points = [] # 存储所有帧的世界坐标点
-    frame_idx = 0 # 初始化帧索引
 
-    # 4. 遍历处理每个文件
+    # 3. 遍历处理每个文件
     for txt_file in txt_files:
         print(f"\n处理文件: {txt_file.name}")
 
@@ -421,17 +353,11 @@ def batch_process_images_and_poses(image_folder_path, pose_file_path, output_bas
         single_frame_filename = f"single_frame_{frame_timestamp_str}.ply"
         save_points_as_ply(world_pts_mm, single_frame_filename, output_base_dir)
 
-        # --- 发送 ZMQ 消息 (如果启用) ---
-        if zmq_enabled and zmq_socket:
-            send_zmq_message(zmq_socket, world_pts_mm, auv_pos, auv_quat, frame_idx)
-        # ---
-
         # 添加到总列表
         all_world_points.append(world_pts_mm)
         print(f"  - 处理完成，添加 {len(world_pts_mm)} 个点到总点云。")
-        frame_idx += 1 # 更新帧索引
 
-    # 5. 合并所有点并保存总PLY文件
+    # 4. 合并所有点并保存总PLY文件
     if all_world_points:
         combined_points = np.vstack(all_world_points)
         total_timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -445,10 +371,6 @@ def batch_process_images_and_poses(image_folder_path, pose_file_path, output_bas
     else:
         print("\n--- 批量处理完成，但没有有效的点云数据可供保存。---")
 
-    # 6. 关闭 ZMQ (如果启用)
-    if zmq_enabled and zmq_context:
-        finalize_zmq(zmq_context)
-
 
 # ... (其余代码不变) ...
 
@@ -459,11 +381,10 @@ if __name__ == "__main__":
     input_pose_file = "D:\\激光试验数据\\20260115水池测试\\14\\AUV_pose_4.csv"  # 位姿文件路径，已修正为 .csv
     # --- END 用户需要修改的部分 ---
 
-    output_directory = "D:/工作/LaserData/yewei融合测试" # 输出PLY文件的根目录
-    enable_zmq = True # 设置为 False 可以禁用 ZMQ 发送
+    output_directory = "D:/工作/LaserData" # 输出PLY文件的根目录
 
     print(f"开始批量处理...")
     print(f"图像文件夹: {input_image_folder}")
     print(f"位姿文件: {input_pose_file}")
-    batch_process_images_and_poses(input_image_folder, input_pose_file, output_directory, zmq_enabled=enable_zmq)
+    batch_process_images_and_poses(input_image_folder, input_pose_file, output_directory)
     print("批量处理脚本执行完毕。")
