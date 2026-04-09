@@ -21,9 +21,9 @@ import atexit
 UDP_IP          = "0.0.0.0"
 UDP_PORT        = 8888
 # NOKOV_SERVER_IP = "10.104.21.38"  # 动捕系统位姿广播IP -> 不再需要
-POSE_ZMQ_IP     = "192.168.105.105"  # 位姿 ZMQ 发送端 IP (例如，来自 C++ 程序)
+POSE_ZMQ_IP     = "192.168.5.105"  # 位姿 ZMQ 发送端 IP (例如，来自 C++ 程序)
 POSE_ZMQ_PORT   = 5556             # 位姿 ZMQ 端口 (例如，C++ 程序发送 PROCESSED 数据的端口)
-ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP (激光数据最终发送的目标)
+ZMQ_SERVER_IP   = "192.168.5.111"  # 接收端 IP (激光数据最终发送的目标)
 ZMQ_PORT        = 5557
 
 # 相机内参矩阵（像素单位）
