@@ -20,9 +20,9 @@ from datetime import datetime
 UDP_IP              = "0.0.0.0"
 UDP_PORT            = 8888
 
-NOKOV_SERVER_IP     = "192.168.5.105"
+NOKOV_SERVER_IP     = "192.168.5.110"
 
-ZMQ_SERVER_IP       = "192.168.5.105"
+ZMQ_SERVER_IP       = "192.168.5.110"
 ZMQ_PORT            = 5557
 
 # 相机内参（请替换为实际值）

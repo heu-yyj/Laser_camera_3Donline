@@ -21,18 +21,19 @@ except ImportError:
 
 # 预设颜色列表（用于多个点云区分），RGB 范围 [0,1]
 COLORS = [
-    [1, 0, 0],    # 红
-    [0, 0, 1],    # 蓝
-    [0, 1, 0],    # 绿
-    [1, 1, 0],    # 黄
-    [1, 0, 1],    # 品红
-    [0, 1, 1],    # 青
-    [1, 0.5, 0],  # 橙
-    [0.5, 0, 1],  # 紫
+    [1, 1, 1],    # 白
+    # [1, 0, 0],    # 红
+    # [0, 0, 1],    # 蓝
+    # [0, 1, 0],    # 绿
+    # [1, 1, 0],    # 黄
+    # [1, 0, 1],    # 品红
+    # [0, 1, 1],    # 青
+    # [1, 0.5, 0],  # 橙
+    # [0.5, 0, 1],  # 紫
 ]
 
 class RealTimePointCloudVisualizer:
-    def __init__(self, zmq_address="tcp://192.168.1.101:5557", max_trajectory_points=10000):
+    def __init__(self, zmq_address="tcp://192.168.5.110:5557", max_trajectory_points=10000):
         self.zmq_bind_address = "tcp://*:5557"
         self.max_trajectory_points = max_trajectory_points
         self.data_queue = queue.Queue(maxsize=100) # 队列大小限制，防止积压

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 相较于v4版本，该版本增加了保存原始图像点数据的功能
+#  v5版本 相较于v4版本，该版本增加了保存原始图像点数据的功能
 """
 激光 + Nokov + ZeroMQ 实时数据发布（全系统单位：毫米 mm）
 """
@@ -22,7 +22,9 @@ import atexit
 UDP_IP          = "0.0.0.0"
 UDP_PORT        = 8888
 NOKOV_SERVER_IP = "10.104.21.38"  # 动捕系统位姿广播IP
-ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP
+# ZMQ_SERVER_IP   = "10.104.21.145"  # 接收端 IP
+ZMQ_SERVER_IP   = "192.168.5.110"  # 接收端 IP
+
 ZMQ_PORT        = 5557
 
 # 相机内参矩阵（像素单位）
@@ -53,7 +55,7 @@ R_auv2cam = (R_z * R_y * R_x)
 T_cam_in_auv =np.array([389.0, 39.8, 405.0])  # 相机在AUV坐标系中的位置 (mm)
 
 POSE_CACHE_SEC    = 5.0         # 位姿缓存时间窗口（秒）
-SYNC_THRESHOLD_MS = 10         # 时间戳同步阈值（毫秒）
+SYNC_THRESHOLD_MS = 100         # 时间戳同步阈值（毫秒）
 
 # 全局状态
 running = True
@@ -293,27 +295,6 @@ def udp_thread():
         depths = compute_depths(xs)
         cam_pts_mm = image_to_camera(points, depths)
         world_pts_mm, distances = camera_to_world_with_distance(cam_pts_mm, auv_pos_mm, auv_quat) 
-
-
-        # # ======== 调试打印开始 ========
-        # print(f"\n[DEBUG Frame {frame_idx:05d}]")
-        # print(f"  Laser Points Count: {len(points)}")
-        # if points:
-        #     xs = np.array([p["x"] for p in points], dtype=np.float64)
-        #     print(f"  X coords - min: {xs.min():.2f}, max: {xs.max():.2f}, cx: {cx:.2f}")
-        
-        # print(f"  Computed Depths - min: {depths.min():.2f}, max: {depths.max():.2f}, mean: {depths.mean():.2f}")
-        # print(f"  Depths - negative count: {(depths < 0).sum()}, zero count: {(depths == 0).sum()}, positive count: {(depths > 0).sum()}")
-        
-        # print(f"  Camera Points - Z coords min: {cam_pts_mm[:, 2].min():.2f}, max: {cam_pts_mm[:, 2].max():.2f}, mean: {cam_pts_mm[:, 2].mean():.2f}")
-        # print(f"  Camera Points - Z negative count: {(cam_pts_mm[:, 2] < 0).sum()}")
-
-        # print(f"  AUV Pose - Position: [{auv_pos_mm[0]:.2f}, {auv_pos_mm[1]:.2f}, {auv_pos_mm[2]:.2f}]")
-        # # print(f"  AUV Quat: [{auv_quat[0]:.4f}, {auv_quat[1]:.4f}, {auv_quat[2]:.4f}, {auv_quat[3]:.4f}]") # 可选打印
-
-        # print(f"  World Points - Z coords min: {world_pts_mm[:, 2].min():.2f}, max: {world_pts_mm[:, 2].max():.2f}, mean: {world_pts_mm[:, 2].mean():.2f}")
-        # print(f"  World Points - Z relative to AUV (min, max): {world_pts_mm[:, 2].min() - auv_pos_mm[2]:.2f}, {world_pts_mm[:, 2].max() - auv_pos_mm[2]:.2f}")
-        # # ======== 调试打印结束 ========
 
 
         # 构建 ZMQ 消息（全部使用毫米单位）
