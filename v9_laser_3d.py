@@ -309,69 +309,55 @@ def update_dynamic_laser_delay():
             print(f"[Delay] 位姿先到达，无需延迟处理")
 
 def try_process_pending_lasers():
-    """
-    处理待重建激光帧。
-    每帧激光最多只处理一次，位姿只按时间过期，不在匹配成功后被消费。
+    """15fps 安全版 + 未来高帧率友好版
+    边遍历边处理，只移除已成功匹配的帧，不清空整个缓存
     """
     ready_frames = []
-    dropped_frames = []
+    to_remove_indices = []   # 记录需要删除的帧在 deque 中的索引
 
     with laser_lock:
-        # 创建激光缓存副本并在锁内处理
-        lasers_to_process = list(laser_cache)
-        laser_cache.clear()
+        if not laser_cache:
+            return
 
-    # 处理每帧激光
-    for laser_ts_ns, laser_points, laser_arrival_time_ns in lasers_to_process:
-        # 尝试匹配位姿
-        with pose_lock:
+        # 遍历当前缓存中的每一帧
+        for idx, (laser_ts_ns, laser_points, laser_arrival_time_ns) in enumerate(laser_cache):
+            laser_ts_ms = laser_ts_ns / 1_000_000.0
+
+            # 如果还没有位姿数据，直接跳出（后续帧也不可能匹配）
             if not pose_cache:
-                # 如果没有位姿数据，重新放回缓存
-                with laser_lock:
-                    laser_cache.append((laser_ts_ns, laser_points, laser_arrival_time_ns))
-                continue
+                break
 
-            # 寻找最接近激光时间戳的位姿
-            laser_ts_ms = laser_ts_ns / 1_000_000  # 转换为毫秒
-            pose_ts_ms = [item[0] for item in pose_cache]
-            nearest_idx = min(range(len(pose_cache)), key=lambda i: abs(pose_ts_ms[i] - laser_ts_ms))
-            nearest_dt_ms = abs(pose_ts_ms[nearest_idx] - laser_ts_ms)
+            # 寻找最近的位姿
+            pose_ts_list = [item[0] for item in pose_cache]
+            nearest_idx = min(range(len(pose_cache)), key=lambda i: abs(pose_ts_list[i] - laser_ts_ms))
+            nearest_dt_ms = abs(pose_ts_list[nearest_idx] - laser_ts_ms)
 
             if nearest_dt_ms <= SYNC_THRESHOLD_MS:
+                # 匹配成功
                 pose = pose_cache[nearest_idx]
-                
-                # 记录位姿-激光时间差（用于动态延迟调整）
-                pose_ts = pose[0]
-                time_diff_ms = pose_ts - laser_ts_ms  # 位姿时间戳 - 激光时间戳
+                time_diff_ms = pose[0] - laser_ts_ms
                 pose_laser_time_diffs.append(time_diff_ms)
-                
+
                 ready_frames.append((
                     laser_ts_ns,
                     laser_points,
-                    pose[0],  # pose_ts_ms
-                    pose[1],  # auv_pos_mm
-                    pose[2],  # auv_quat
+                    pose[0],      # pose_ts_ms
+                    pose[1],      # auv_pos_mm
+                    pose[2],      # auv_quat
                     nearest_dt_ms
                 ))
+                to_remove_indices.append(idx)   # 标记为删除
             else:
-                # 时间差太大，丢弃或重新放入缓存
-                # 计算缓存窗口大小（考虑动态延迟）
-                cache_window_ms = 2000  # 默认2秒缓存窗口
-                if dynamic_laser_delay_ms > 0:
-                    cache_window_ms += dynamic_laser_delay_ms
-                
-                oldest_pose_ts = pose_cache[0][0]
-                if laser_ts_ms < oldest_pose_ts - cache_window_ms:
-                    # 激光太旧，丢弃
-                    dropped_frames.append(laser_ts_ns)
-                else:
-                    # 激光还不算太旧，重新放入缓存
-                    with laser_lock:
-                        laser_cache.append((laser_ts_ns, laser_points, laser_arrival_time_ns))
+                # 判断是否太旧需要丢弃
+                cache_window_ms = 2000 + dynamic_laser_delay_ms
+                if laser_ts_ms < pose_cache[0][0] - cache_window_ms:
+                    to_remove_indices.append(idx)   # 标记为丢弃
 
-    for laser_ts_ns in dropped_frames:
-        print(f"[Sync] Drop laser frame: timestamp {laser_ts_ns} ns 早于当前 pose 缓存窗口")
+        # 反向删除（防止索引错位）
+        for idx in sorted(to_remove_indices, reverse=True):
+            del laser_cache[idx]
 
+    # 在锁外面处理匹配成功的帧（耗时操作）
     for ready_frame in ready_frames:
         process_matched_frame(*ready_frame)
 
