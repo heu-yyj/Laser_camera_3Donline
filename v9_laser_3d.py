@@ -64,7 +64,7 @@ LASER_DELAY_REDUNDANCY = 300       # 激光延迟冗余值(ms)
 MAX_LASER_DELAY = 1000             # 最大激光延迟限制(ms)
 
 # 如果 Nokov 中存在多个刚体，请在这里填写 AUV 对应的 rigid body ID。
-TARGET_RIGID_BODY_ID = 1  # 假设刚体ID为1，你可以根据实际情况修改
+TARGET_RIGID_BODY_ID = 0  # 假设刚体ID为1，你可以根据实际情况修改
 
 # 全局状态
 running = True
@@ -595,4 +595,4 @@ if __name__ == "__main__":
             print(f"本次会话未生成三维点云数据文件。")
         
         print("资源已释放，程序退出。")
-        sys.exit(0)
+        sys.exit(0)  
